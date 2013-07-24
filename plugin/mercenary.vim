@@ -403,6 +403,40 @@ function! s:method_handlers.show(rev) dict abort
 endfunction
 
 " }}}1
+" :HGqapplied {{{1
+function! s:HGqapplied() abort
+    execute 'edit '.s:gen_mercenary_path('qapplied')
+endfunction
+
+call s:add_command("-nargs=0 HGqapplied call s:HGqapplied()")
+
+" }}}1
+" mercenary://root_dir//qapplied {{{1
+
+function! s:method_handlers.qapplied() dict abort
+  let args = ['qapplied']
+  let hg_mq_applied_cmd = call(s:repo().hg_command, args, s:repo())
+
+  let temppath = resolve(tempname())
+  let outfile = temppath . '.out'
+  let errfile = temppath . '.err'
+
+  silent! execute '!'.hg_mq_applied_cmd.' > '.outfile.' 2> '.errfile
+
+  silent! execute 'read '.outfile
+  0d
+
+  setlocal nomodified nomodifiable readonly
+  setlocal filetype=diff
+
+  if &bufhidden ==# ''
+    " Delete the buffer when it becomes hidden
+    setlocal bufhidden=delete
+  endif
+
+endfunction
+
+" }}}1
 " :HGdiff {{{1
 
 function! s:Diff(...) abort
