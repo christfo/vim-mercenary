@@ -429,8 +429,8 @@ function! s:method_handlers.qapplied() dict abort
   " setlocal nomodified nomodifiable readonly filetype=mqlist
   setlocal nomodified nomodifiable readonly filetype=mqlist
   nnoremap <buffer> <silent> l :<C-U>exe <SID>MqList('')<CR>
-  nnoremap <buffer> <silent> + :<C-U>exe <SID>MqPush('')<CR>
-  nnoremap <buffer> <silent> - :<C-U>exe <SID>MqPop('')<CR>
+  nnoremap <buffer> <silent> + :<C-U>exe <SID>MqCommand('qpush')<CR>
+  nnoremap <buffer> <silent> - :<C-U>exe <SID>MqCommand('qpop')<CR>
 
   if &bufhidden ==# ''
     " Delete the buffer when it becomes hidden
@@ -445,14 +445,9 @@ function! s:MqList(suffix) abort
     echo "List ".qname
 endfunction
 
-function! s:MqPush(suffix) abort
+function! s:MqCommand(cmd) abort
     let qname = getline('.')
-    echo "Push ".qname
-endfunction
-
-function! s:MqPop(suffix) abort
-    let qname = getline('.')
-    echo "Pop ".qname
+    echo a:cmd . qname
 endfunction
 
 augroup mercurial_queue
