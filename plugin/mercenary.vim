@@ -418,21 +418,51 @@ function! s:method_handlers.qapplied() dict abort
   let hg_mq_applied_cmd = call(s:repo().hg_command, args, s:repo())
 
   let temppath = resolve(tempname())
-  let outfile = temppath . '.out'
+  let outfile = temppath . '.mqlist'
   let errfile = temppath . '.err'
 
   silent! execute '!'.hg_mq_applied_cmd.' > '.outfile.' 2> '.errfile
 
   silent! execute 'read '.outfile
-  0d
+  " 0d
 
-  setlocal nomodified nomodifiable readonly
-  setlocal filetype=diff
+  " setlocal nomodified nomodifiable readonly filetype=mqlist
+  setlocal nomodified nomodifiable readonly filetype=mqlist
+  nnoremap <buffer> <silent> l :<C-U>exe <SID>MqList('')<CR>
+  nnoremap <buffer> <silent> + :<C-U>exe <SID>MqPush('')<CR>
+  nnoremap <buffer> <silent> - :<C-U>exe <SID>MqPop('')<CR>
 
   if &bufhidden ==# ''
     " Delete the buffer when it becomes hidden
     setlocal bufhidden=delete
   endif
+
+endfunction
+
+" Process the selection of a queue
+function! s:MqList(suffix) abort
+    let qname = getline('.')
+    echo "List ".qname
+endfunction
+
+function! s:MqPush(suffix) abort
+    let qname = getline('.')
+    echo "Push ".qname
+endfunction
+
+function! s:MqPop(suffix) abort
+    let qname = getline('.')
+    echo "Pop ".qname
+endfunction
+
+augroup mercurial_queue
+    autocmd BufReadPost *.mqlist setfiletype mqlist
+    autocmd Syntax mqlist call s:MqListSyntax()
+augroup END
+
+function! s:MqListSyntax() abort
+    syn match MercenaryQName "^.*"
+    hi def link MercenaryQName Keyword
 
 endfunction
 
