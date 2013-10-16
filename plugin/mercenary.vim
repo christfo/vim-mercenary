@@ -406,6 +406,48 @@ function! s:method_handlers.show(rev) dict abort
 endfunction
 
 " }}}1
+" :HGlog {{{1
+function! s:HGlog(...) abort
+    if a:0 == 0
+      let file=s:buffer().path()
+    elseif a:0 == 1
+      let file=a:1
+    end
+    execute 'edit '.s:gen_mercenary_path('glog', file)
+endfunction
+
+call s:add_command("-nargs=? -complete=file HGlog call s:HGlog(<f-args>)")
+
+" mercenary://root_dir//qapplied {{{1
+
+function! s:method_handlers.glog(file) dict abort
+  let args = ['glog', '--template', 'cs:   {rev}:{node|short} {tags}\nsummary:     {desc|firstline|fill68|tabindent|tabindent}\n\n', a:file]
+  let hg_glog_cmd = call(s:repo().hg_command, args, s:repo())
+
+  let temppath = resolve(tempname())
+  let outfile = temppath . '.glog'
+  let errfile = temppath . '.err'
+
+  echo hg_glog_cmd
+  silent! execute '!'.hg_glog_cmd.' > '.outfile.' 2> '.errfile
+
+  silent! execute 'read '.outfile
+  " 0d
+
+  " setlocal nomodified nomodifiable readonly filetype=mqlist
+  setlocal nomodified nomodifiable readonly filetype=glog
+  " nnoremap <buffer> <silent> s :<C-U>exe <SID>show('')<CR>
+
+  nnoremap <buffer> q :silent bd!<CR>
+  if &bufhidden ==# ''
+    " Delete the buffer when it becomes hidden
+    setlocal bufhidden=wipe
+  endif
+
+endfunction
+" }}}1
+
+" }}}1
 " :HGqapplied {{{1
 function! s:HGqapplied() abort
     execute 'edit '.s:gen_mercenary_path('qapplied')
@@ -435,9 +477,10 @@ function! s:method_handlers.qapplied() dict abort
   nnoremap <buffer> <silent> + :<C-U>exe <SID>MqCommand('qpush')<CR>
   nnoremap <buffer> <silent> - :<C-U>exe <SID>MqCommand('qpop')<CR>
 
+  nnoremap <buffer> q :silent bd!<CR>
   if &bufhidden ==# ''
     " Delete the buffer when it becomes hidden
-    setlocal bufhidden=delete
+    setlocal bufhidden=wipe
   endif
 
 endfunction
