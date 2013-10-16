@@ -257,6 +257,7 @@ function! s:Blame() abort
   setlocal scrollbind nowrap nofoldenable
   exe 'keepalt leftabove vsplit ' . outfile
   setlocal nomodified nomodifiable nonumber scrollbind nowrap foldcolumn=0 nofoldenable filetype=mercenaryblame
+  nnoremap <buffer> q :silent bd!<CR>
 
   " When the current buffer containing the blame leaves the window, restore the
   " settings on the source window.
@@ -358,10 +359,11 @@ function! s:method_handlers.cat(rev, filepath) dict abort
   0d
 
   setlocal nomodified nomodifiable readonly
+  nnoremap <buffer> q :silent diffoff!<cr>:silent bd!<CR>
 
   if &bufhidden ==# ''
     " Delete the buffer when it becomes hidden
-    setlocal bufhidden=delete
+    setlocal bufhidden=wipe
   endif
 endfunction
 
@@ -395,10 +397,11 @@ function! s:method_handlers.show(rev) dict abort
 
   setlocal nomodified nomodifiable readonly
   setlocal filetype=diff
+  nnoremap <buffer> q :silent bd!<CR>
 
   if &bufhidden ==# ''
     " Delete the buffer when it becomes hidden
-    setlocal bufhidden=delete
+    setlocal bufhidden=wipe
   endif
 endfunction
 
