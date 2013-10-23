@@ -224,7 +224,12 @@ function! s:MercMoveSync(direction) "{{{
           call cursor( line('.'), stridx( linetxt, 'o' ) )
           break
       endif
-      call cursor( line('.') - a:direction, 0 )
+      " need to trap top and bottom"
+      let newline = line('.') - a:direction
+      if newline > line('$') || newline == 0
+          break
+      endif
+      call cursor( newline, 0 )
     endwhile
 endfunction"}}}
 
@@ -242,6 +247,16 @@ function! s:MercMove(direction) range "{{{
         let seekstep = 3*a:direction
     endwhile
 endfunction"}}}
+
+function! s:MercClose() "{{{
+    " relies on bclose.vim - might have to come back to this.
+    if exists(":Bclose")
+        :Bclose
+    else
+        quit
+    endif
+    " hide
+endfunction "}}}
 
 " }}}1
 " :HGblame {{{1
@@ -286,7 +301,8 @@ function! s:Blame() abort
   setlocal nomodified nomodifiable nonumber scrollbind nowrap foldcolumn=0 nofoldenable filetype=mercenaryblame
   nnoremap <buffer> q :silent bd!<CR>
   nnoremap <buffer> <silent> s :<C-U>exe <SID>BlameShowCS()<CR>
-  nnoremap <buffer> <silent> d :<C-U>exe <SID>BlameGetCS()<CR>
+  nnoremap <buffer> <silent> c :<C-U>exe <SID>BlameGetCS()<CR>
+  nnoremap <buffer> <silent> d :<C-U>exe <SID>BlameDiffCS()<CR>
 
   " When the current buffer containing the blame leaves the window, restore the
   " settings on the source window.
@@ -316,7 +332,12 @@ function! s:BlameGetCS() abort
 endfunction
 
 function! s:BlameShowCS() abort
-  call s:Show( s:BlameGetCS() )
+  let csnum = s:BlameGetCS() 
+  if csnum == ''
+      echo "Invalid Changest"
+  else
+      call s:Show( csnum )
+  endif
 endfunction
 
 call s:add_command("HGblame call s:Blame()")
@@ -456,7 +477,30 @@ endfunction
 
 call s:add_command("-nargs=? -complete=file HGlog call s:HGlog(<f-args>)")
 
-function! s:GlogSyntaxGraph() "{{{
+function! s:GlogMap() "{{{
+    nnoremap <buffer> q :silent bd!<CR>
+    nnoremap <script> <silent> <buffer> <CR>          :call <sid>BlameShowCS()<CR>
+    nnoremap <script> <silent> <buffer> k             :call <sid>MercMove(1)<CR>
+    nnoremap <script> <silent> <buffer> j             :call <sid>MercMove(-1)<CR>
+    nnoremap <script> <silent> <buffer> s             :call <sid>BlameShowCS()<CR>
+    nnoremap <script> <silent> <buffer> d             :call <sid>BlameDiffCS()<CR>
+    nnoremap <script> <silent> <buffer> c             :call <sid>BlameCatCS()<CR>
+    nnoremap <script> <silent> <buffer> <down>        :call <sid>MercMove(-1)<CR>
+    nnoremap <script> <silent> <buffer> <up>          :call <sid>MercMove(1)<CR>
+    nnoremap <script> <silent> <buffer> <C-U>         <C-U>:call <sid>MercMove(1)<CR>
+    nnoremap <script> <silent> <buffer> <C-D>         <C-D>:call <sid>MercMove(-1)<CR>
+    nnoremap <script> <silent> <buffer> gg            gg:call <sid>MercMove(1)<CR>
+    nnoremap <script> <silent> <buffer> G             G:call <sid>MercMove(-1)<CR>
+    " nnoremap <script> <silent> <buffer> P             :call <sid>MercPlayTo()<CR>
+    " nnoremap <script> <silent> <buffer> p             :call <sid>MercRenderChangePreview()<CR>
+    " nnoremap <script> <silent> <buffer> r             :call <sid>MercRenderPreview()<CR>
+    nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
+    cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
+    cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
+    " nnoremap <script> <silent> <buffer> <2-LeftMouse> :call <sid>MercMouseDoubleClick()<CR>
+endfunction "}}}
+
+function! s:GlogSyntax() "{{{
     let b:current_syntax = 'glog'
 
     syn match GlogCurrentLocation '@'
@@ -476,9 +520,30 @@ function! s:GlogSyntaxGraph() "{{{
     hi def link GlogHash Identifier
 endfunction"}}}
 
-" mercenary://root_dir//qapplied {{{1
+function! s:GlogSettings() "{{{
+    setlocal nospell 
+    setlocal nomodified 
+    setlocal nomodifiable
+    setlocal readonly 
+    setlocal noswapfile
+    setlocal nobuflisted
+    setlocal nolist
+    setlocal nonumber
+    setlocal norelativenumber
+    setlocal nowrap
+    setlocal bufhidden=
+    setlocal buftype=nofile
+    setlocal filetype=glog
+    " if &bufhidden ==# ''
+    "   " Delete the buffer when it becomes hidden
+    "   setlocal bufhidden=wipe
+    " endif
+    call s:GlogSyntax()
+    call s:GlogMap()
+endfunction "}}} 
 
-function! s:method_handlers.glog(file) dict abort
+
+function! s:method_handlers.glog(file) dict abort " {{{
   let args = ['glog', '--template', 'cs:       [{rev}:{node|short}] {tags}\nsummary: {desc|firstline|fill68|tabindent|tabindent}\n\n', a:file]
   let hg_glog_cmd = call(s:repo().hg_command, args, s:repo())
 
@@ -488,35 +553,20 @@ function! s:method_handlers.glog(file) dict abort
 
   echo hg_glog_cmd
   silent! execute '!'.hg_glog_cmd.' > '.outfile.' 2> '.errfile
-
   silent! execute 'read '.outfile
-  " 0d
 
-  " setlocal nomodified nomodifiable readonly filetype=mqlist
-  setlocal nomodified nomodifiable readonly filetype=glog
-  " nnoremap <buffer> <silent> s :<C-U>exe <SID>show('')<CR>
+  call s:GlogSettings()
 
-  call s:GlogSyntaxGraph()
-  nnoremap <buffer> q :silent bd!<CR>
-  exec 'nnoremap <script> <silent> <buffer> ' . 'k' . " :call <sid>MercMove(1)<CR>"
-  exec 'nnoremap <script> <silent> <buffer> ' . 'j' . " :call <sid>MercMove(-1)<CR>"
-  exec 'nnoremap <script> <silent> <buffer> ' . 's' . " :call <sid>BlameShowCS()<CR>"
-  exec 'nnoremap <script> <silent> <buffer> ' . 'd' . " :call <sid>Diff()<CR>"
-  if &bufhidden ==# ''
-    " Delete the buffer when it becomes hidden
-    setlocal bufhidden=wipe
-  endif
+endfunction " }}}1
 
-endfunction
-" }}}1
-
-augroup MercGlogAug
+augroup MercGlogAug " {{{
     autocmd!
     autocmd BufReadPost *.glog setfiletype glog
-    autocmd Syntax glog call s:GlogSyntaxGraph()
-augroup END
+    autocmd Syntax glog call s:GlogSyntax()
+augroup END " }}}1
 
-" }}}1
+
+" mercenary://root_dir//qapplied {{{1
 " :HGqapplied {{{1
 function! s:HGqapplied() abort
     execute 'edit '.s:gen_mercenary_path('qapplied')
