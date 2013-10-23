@@ -456,10 +456,30 @@ endfunction
 
 call s:add_command("-nargs=? -complete=file HGlog call s:HGlog(<f-args>)")
 
+function! s:GlogSyntaxGraph() "{{{
+    let b:current_syntax = 'glog'
+
+    syn match GlogCurrentLocation '@'
+    syn match GlogCs 'cs:'
+    syn match GlogSum 'summary:'
+    syn match GlogHelp '\v^".*$'
+    syn match GlogNumberField '\v\[[0-9a-f:]+\]'
+    syn match GlogHash '\v[0-9]+' contained containedin=GlogNumberField
+    syn match GlogNumber '\v[0-9a-f]{12}' contained containedin=GlogNumberField
+
+    hi def link GlogCurrentLocation Keyword
+    hi def link GlogCs Keyword
+    hi def link GlogSum Keyword
+    hi def link GlogHelp Comment
+    hi def link GlogNumberField label
+    hi def link GlogNumber Identifier
+    hi def link GlogHash Identifier
+endfunction"}}}
+
 " mercenary://root_dir//qapplied {{{1
 
 function! s:method_handlers.glog(file) dict abort
-  let args = ['glog', '--template', 'cs:   {rev}:{node|short} {tags}\nsummary:     {desc|firstline|fill68|tabindent|tabindent}\n\n', a:file]
+  let args = ['glog', '--template', 'cs:       [{rev}:{node|short}] {tags}\nsummary: {desc|firstline|fill68|tabindent|tabindent}\n\n', a:file]
   let hg_glog_cmd = call(s:repo().hg_command, args, s:repo())
 
   let temppath = resolve(tempname())
@@ -476,6 +496,7 @@ function! s:method_handlers.glog(file) dict abort
   setlocal nomodified nomodifiable readonly filetype=glog
   " nnoremap <buffer> <silent> s :<C-U>exe <SID>show('')<CR>
 
+  call s:GlogSyntaxGraph()
   nnoremap <buffer> q :silent bd!<CR>
   exec 'nnoremap <script> <silent> <buffer> ' . 'k' . " :call <sid>MercMove(1)<CR>"
   exec 'nnoremap <script> <silent> <buffer> ' . 'j' . " :call <sid>MercMove(-1)<CR>"
@@ -488,6 +509,12 @@ function! s:method_handlers.glog(file) dict abort
 
 endfunction
 " }}}1
+
+augroup MercGlogAug
+    autocmd!
+    autocmd BufReadPost *.glog setfiletype glog
+    autocmd Syntax glog call s:GlogSyntaxGraph()
+augroup END
 
 " }}}1
 " :HGqapplied {{{1
