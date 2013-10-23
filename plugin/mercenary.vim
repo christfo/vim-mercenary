@@ -216,6 +216,33 @@ augroup mercenary_buffer
   autocmd BufWinLeave * call s:Buffer_winleave(expand('<abuf>'))
 augroup END
 
+function! s:MercMoveSync(direction) "{{{
+    while line('.') > 0
+      let linetxt = getline('.')
+      let cmark = match( linetxt, '^\(| \)*o' )
+      if cmark != -1
+          call cursor( line('.'), stridx( linetxt, 'o' ) )
+          break
+      endif
+      call cursor( line('.') - a:direction, 0 )
+    endwhile
+endfunction"}}}
+
+function! s:MercMove(direction) range "{{{
+    if v:count1 == 0
+        let delta = 1 
+    else
+        let delta = v:count1
+    endif
+    let seekstep = a:direction
+    while delta > 0
+        let delta = delta - 1 
+        call cursor( line('.') - seekstep, 5 )
+        call s:MercMoveSync(a:direction)  
+        let seekstep = 3*a:direction
+    endwhile
+endfunction"}}}
+
 " }}}1
 " :HGblame {{{1
 
@@ -258,6 +285,8 @@ function! s:Blame() abort
   exe 'keepalt leftabove vsplit ' . outfile
   setlocal nomodified nomodifiable nonumber scrollbind nowrap foldcolumn=0 nofoldenable filetype=mercenaryblame
   nnoremap <buffer> q :silent bd!<CR>
+  nnoremap <buffer> <silent> s :<C-U>exe <SID>BlameShowCS()<CR>
+  nnoremap <buffer> <silent> d :<C-U>exe <SID>BlameGetCS()<CR>
 
   " When the current buffer containing the blame leaves the window, restore the
   " settings on the source window.
@@ -279,6 +308,15 @@ function! s:Blame() abort
   execute "vertical resize " . blame_column_count
 
   " TODO(jlfwong): Maybe use winfixwidth to stop resizing of the blame window
+endfunction
+
+function! s:BlameGetCS() abort
+    let csnum = matchstr( getline('.'), '[^0-9]\+\zs\d\+\ze')
+    return csnum
+endfunction
+
+function! s:BlameShowCS() abort
+  call s:Show( s:BlameGetCS() )
 endfunction
 
 call s:add_command("HGblame call s:Blame()")
@@ -439,6 +477,10 @@ function! s:method_handlers.glog(file) dict abort
   " nnoremap <buffer> <silent> s :<C-U>exe <SID>show('')<CR>
 
   nnoremap <buffer> q :silent bd!<CR>
+  exec 'nnoremap <script> <silent> <buffer> ' . 'k' . " :call <sid>MercMove(1)<CR>"
+  exec 'nnoremap <script> <silent> <buffer> ' . 'j' . " :call <sid>MercMove(-1)<CR>"
+  exec 'nnoremap <script> <silent> <buffer> ' . 's' . " :call <sid>BlameShowCS()<CR>"
+  exec 'nnoremap <script> <silent> <buffer> ' . 'd' . " :call <sid>Diff()<CR>"
   if &bufhidden ==# ''
     " Delete the buffer when it becomes hidden
     setlocal bufhidden=wipe
@@ -471,12 +513,10 @@ function! s:method_handlers.qapplied() dict abort
   silent! execute 'read '.outfile
   " 0d
 
-  " setlocal nomodified nomodifiable readonly filetype=mqlist
   setlocal nomodified nomodifiable readonly filetype=mqlist
   nnoremap <buffer> <silent> l :<C-U>exe <SID>MqList('')<CR>
   nnoremap <buffer> <silent> + :<C-U>exe <SID>MqCommand('qpush')<CR>
   nnoremap <buffer> <silent> - :<C-U>exe <SID>MqCommand('qpop')<CR>
-
   nnoremap <buffer> q :silent bd!<CR>
   if &bufhidden ==# ''
     " Delete the buffer when it becomes hidden
