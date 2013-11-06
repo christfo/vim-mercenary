@@ -11,7 +11,7 @@
 "   * Make :HGcat {rev} % do something reasonable if you're already viewing
 "     a file at a specifi revision
 
-if exists('g:loaded_mercenary') || &cp
+if ( empty($MERC_DEV) && exists('g:loaded_mercenary') ) || &cp
   finish
 endif
 
@@ -129,8 +129,8 @@ endfunction
 let s:Repo = {}
 function! s:Repo.new(root_dir) dict abort
   let repo = {
-    \"root_dir" : a:root_dir
-  \}
+        \"root_dir" : a:root_dir
+        \}
   return s:clsinit(repo, self)
 endfunction
 
@@ -165,8 +165,8 @@ endfunction
 let s:Buffer = {}
 function! s:Buffer.new(number) dict abort
   let buffer = {
-    \"_number" : a:number
-  \}
+        \"_number" : a:number
+        \}
   return s:clsinit(buffer, self)
 endfunction
 
@@ -217,46 +217,98 @@ augroup mercenary_buffer
 augroup END
 
 function! s:MercMoveSync(direction) "{{{
-    while line('.') > 0
-      let linetxt = getline('.')
-      let cmark = match( linetxt, '^\(| \)*o' )
-      if cmark != -1
-          call cursor( line('.'), stridx( linetxt, 'o' ) )
-          break
-      endif
-      " need to trap top and bottom"
-      let newline = line('.') - a:direction
-      if newline > line('$') || newline == 0
-          break
-      endif
-      call cursor( newline, 0 )
-    endwhile
+  while line('.') > 0
+    let linetxt = getline('.')
+    let cmark = match( linetxt, '^\(| \)*[@o]' )
+    if cmark != -1
+      call cursor( line('.'), stridx( linetxt, 'o' ) )
+      break
+    endif
+    " need to trap top and bottom"
+    let newline = line('.') - a:direction
+    if newline > line('$') || newline == 0
+      break
+    endif
+    call cursor( newline, 0 )
+  endwhile
 endfunction"}}}
 
 function! s:MercMove(direction) range "{{{
-    if v:count1 == 0
-        let delta = 1 
-    else
-        let delta = v:count1
-    endif
-    let seekstep = a:direction
-    while delta > 0
-        let delta = delta - 1 
-        call cursor( line('.') - seekstep, 5 )
-        call s:MercMoveSync(a:direction)  
-        let seekstep = 3*a:direction
-    endwhile
+  if v:count1 == 0
+    let delta = 1 
+  else
+    let delta = v:count1
+  endif
+  let seekstep = a:direction
+  while delta > 0
+    let delta = delta - 1 
+    call cursor( line('.') - seekstep, 5 )
+    call s:MercMoveSync(a:direction)  
+    let seekstep = 3*a:direction
+  endwhile
 endfunction"}}}
 
 function! s:MercClose() "{{{
-    " relies on bclose.vim - might have to come back to this.
+  " relies on bclose.vim - might have to come back to this.
+  if ! exists( "b:source_bufnr" ) || ! bufexists( "b:source_bufnr" )
+    echo "bufnr not recorded"
     if exists(":Bclose")
-        :Bclose
+      :Bclose
     else
-        quit
+      quit
     endif
-    " hide
+  else
+    diffoff!
+    let winnr = bufwinnr( b:source_bufnr )
+    if winnr != -1 
+      quit
+      execute winnr . "wincmd w"
+    else
+      execute b:source_bufnr . "buffer"
+    endif
+  endif
+  " hide
 endfunction "}}}
+
+" }}}1
+" Initialization and Routing {{{1
+let s:method_handlers = {}
+
+function! s:route(path) abort
+  let hg_root_dir = s:extract_hg_root_dir(a:path)
+  if hg_root_dir == ''
+    return
+  endif
+
+  let mercenary_spec = matchstr(s:shellslash(a:path), '\C^mercenary://.\{-\}//\zs.*')
+
+  if mercenary_spec != ''
+    " Route the mercenary:// path
+    let method = matchstr(mercenary_spec, '\C.\{-\}\ze:')
+
+    " Arguments to the mercenary:// methods are delimited by //
+    let args = split(matchstr(mercenary_spec, '\C:\zs.*'), '//')
+
+    try
+      if has_key(s:method_handlers, method)
+        call call(s:method_handlers[method], args, s:method_handlers)
+      else
+        call s:warn('mercenary: unknown mercenary:// method ' . method)
+      endif
+    catch /^Vim\%((\a\+)\)\=:E118/
+      call s:warn("mercenary: Too many arguments to mercenary://" . method)
+    catch /^Vim\%((\a\+)\)\=:E119/
+      call s:warn("mercenary: Not enough argument to mercenary://" . method)
+    endtry
+  end
+
+  call s:buffer().enable_mercenary_commands()
+endfunction
+
+augroup mercenary
+  autocmd!
+  autocmd BufNewFile,BufReadPost * call s:route(expand('<amatch>:p'))
+augroup END
 
 " }}}1
 " :HGblame {{{1
@@ -299,9 +351,12 @@ function! s:Blame() abort
   setlocal scrollbind nowrap nofoldenable
   exe 'keepalt leftabove vsplit ' . outfile
   setlocal nomodified nomodifiable nonumber scrollbind nowrap foldcolumn=0 nofoldenable filetype=mercenaryblame
-  nnoremap <buffer> q :silent bd!<CR>
+  let b:source_bufnr = source_bufnr 
+  nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
+  cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
+  cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
   nnoremap <buffer> <silent> s :<C-U>exe <SID>BlameShowCS()<CR>
-  nnoremap <buffer> <silent> c :<C-U>exe <SID>BlameGetCS()<CR>
+  nnoremap <buffer> <silent> c :<C-U>exe <SID>BlameCatCS()<CR>
   nnoremap <buffer> <silent> d :<C-U>exe <SID>BlameDiffCS()<CR>
 
   " When the current buffer containing the blame leaves the window, restore the
@@ -327,16 +382,42 @@ function! s:Blame() abort
 endfunction
 
 function! s:BlameGetCS() abort
-    let csnum = matchstr( getline('.'), '[^0-9]\+\zs\d\+\ze')
-    return csnum
+  let csnum = matchstr( getline('.'), '[^0-9]\+\zs\d\+\ze')
+  return csnum
+endfunction
+
+function! s:BlameSync() abort
+  let csnum = s:BlameGetCS() 
+  if csnum == ''
+    echo "Invalid Changest"
+    return -1
+  elseif ! exists( "b:source_bufnr" )
+    echo "invalid reference buffer"
+    return -1
+  else
+    execute bufwinnr( b:source_bufnr ).' wincmd w '
+  endif
+  return csnum
+endfunction
+
+function! s:BlameCatCS() abort
+  let csnum = s:BlameSync()
+  if -1 != csnum
+    call s:Cat( csnum, s:buffer().relpath() )
+  endif
+endfunction
+
+function! s:BlameDiffCS() abort
+  let csnum = s:BlameSync()
+  if -1 != csnum
+    call s:Diff( csnum )
+  endif
 endfunction
 
 function! s:BlameShowCS() abort
-  let csnum = s:BlameGetCS() 
-  if csnum == ''
-      echo "Invalid Changest"
-  else
-      call s:Show( csnum )
+  let csnum = s:BlameSync()
+  if -1 != csnum
+    call s:Show( csnum )
   endif
 endfunction
 
@@ -348,58 +429,18 @@ augroup mercenary_blame
 augroup END
 
 " }}}1
-" Initialization and Routing {{{1
-
-let s:method_handlers = {}
-
-function! s:route(path) abort
-  let hg_root_dir = s:extract_hg_root_dir(a:path)
-  if hg_root_dir == ''
-    return
-  endif
-
-  let mercenary_spec = matchstr(s:shellslash(a:path), '\C^mercenary://.\{-\}//\zs.*')
-
-  if mercenary_spec != ''
-    " Route the mercenary:// path
-    let method = matchstr(mercenary_spec, '\C.\{-\}\ze:')
-
-    " Arguments to the mercenary:// methods are delimited by //
-    let args = split(matchstr(mercenary_spec, '\C:\zs.*'), '//')
-
-    try
-      if has_key(s:method_handlers, method)
-        call call(s:method_handlers[method], args, s:method_handlers)
-      else
-        call s:warn('mercenary: unknown mercenary:// method ' . method)
-      endif
-    catch /^Vim\%((\a\+)\)\=:E118/
-      call s:warn("mercenary: Too many arguments to mercenary://" . method)
-    catch /^Vim\%((\a\+)\)\=:E119/
-      call s:warn("mercenary: Not enough argument to mercenary://" . method)
-    endtry
-  end
-
-  call s:buffer().enable_mercenary_commands()
-endfunction
-
-augroup mercenary
-  autocmd!
-  autocmd BufNewFile,BufReadPost * call s:route(expand('<amatch>:p'))
-augroup END
-
-" }}}1
 " :HGcat {{{1
 
 function! s:Cat(rev, path) abort
+  let source_bufnr = s:buffer().bufnr()
   execute 'edit ' . s:gen_mercenary_path('cat', a:rev, a:path)
+  let b:source_bufnr = source_bufnr
 endfunction
 
 call s:add_command("-nargs=+ -complete=file HGcat call s:Cat(<f-args>)")
 
 " }}}1
 " mercenary://root_dir//cat:rev//filepath {{{1
-
 function! s:method_handlers.cat(rev, filepath) dict abort
   " TODO(jlfwong): Error handling - (file not found, rev not fond)
 
@@ -418,19 +459,24 @@ function! s:method_handlers.cat(rev, filepath) dict abort
   0d
 
   setlocal nomodified nomodifiable readonly
-  nnoremap <buffer> q :silent diffoff!<cr>:silent bd!<CR>
+  nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
+  cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
+  cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
 
-  if &bufhidden ==# ''
-    " Delete the buffer when it becomes hidden
-    setlocal bufhidden=wipe
-  endif
+  " if &bufhidden ==# ''
+  "   " Delete the buffer when it becomes hidden
+  "   setlocal bufhidden=wipe
+  " endif
 endfunction
+" }}}1
 
 " }}}1
 " :HGshow {{{1
 
 function! s:Show(rev) abort
+  let source_bufnr = s:buffer().bufnr()
   execute 'edit ' . s:gen_mercenary_path('show', a:rev)
+  let b:source_bufnr = source_bufnr
 endfunction
 
 call s:add_command("-nargs=1 HGshow call s:Show(<f-args>)")
@@ -438,7 +484,6 @@ call s:add_command("-nargs=1 HGshow call s:Show(<f-args>)")
 
 " }}}1
 " mercenary://root_dir//show:rev {{{1
-
 function! s:method_handlers.show(rev) dict abort
   " TODO(jlfwong): DRY this up w/ method_handlers.cat
 
@@ -456,127 +501,130 @@ function! s:method_handlers.show(rev) dict abort
 
   setlocal nomodified nomodifiable readonly
   setlocal filetype=diff
-  nnoremap <buffer> q :silent bd!<CR>
+  nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
+  cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
+  cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
 
-  if &bufhidden ==# ''
-    " Delete the buffer when it becomes hidden
-    setlocal bufhidden=wipe
-  endif
+  " if &bufhidden ==# ''
+  "   " Delete the buffer when it becomes hidden
+  "   setlocal bufhidden=wipe
+  " endif
 endfunction
 
 " }}}1
 " :HGlog {{{1
 function! s:HGlog(...) abort
-    if a:0 == 0
-      let file=s:buffer().path()
-    elseif a:0 == 1
-      let file=a:1
-    end
-    execute 'edit '.s:gen_mercenary_path('glog', file)
+  if a:0 == 0
+    let file=s:buffer().relpath()
+  elseif a:0 == 1
+    let file=a:1
+  end
+  let source_bufnr = s:buffer().bufnr()
+  exe 'keepalt leftabove vsplit ' .s:gen_mercenary_path('glog', file) 
+  let b:source_bufnr = source_bufnr 
+  " execute 'edit '.s:gen_mercenary_path('glog', file)
 endfunction
 
 call s:add_command("-nargs=? -complete=file HGlog call s:HGlog(<f-args>)")
 
-function! s:GlogMap() "{{{
-    nnoremap <buffer> q :silent bd!<CR>
-    nnoremap <script> <silent> <buffer> <CR>          :call <sid>BlameShowCS()<CR>
-    nnoremap <script> <silent> <buffer> k             :call <sid>MercMove(1)<CR>
-    nnoremap <script> <silent> <buffer> j             :call <sid>MercMove(-1)<CR>
-    nnoremap <script> <silent> <buffer> s             :call <sid>BlameShowCS()<CR>
-    nnoremap <script> <silent> <buffer> d             :call <sid>BlameDiffCS()<CR>
-    nnoremap <script> <silent> <buffer> c             :call <sid>BlameCatCS()<CR>
-    nnoremap <script> <silent> <buffer> <down>        :call <sid>MercMove(-1)<CR>
-    nnoremap <script> <silent> <buffer> <up>          :call <sid>MercMove(1)<CR>
-    nnoremap <script> <silent> <buffer> <C-U>         <C-U>:call <sid>MercMove(1)<CR>
-    nnoremap <script> <silent> <buffer> <C-D>         <C-D>:call <sid>MercMove(-1)<CR>
-    nnoremap <script> <silent> <buffer> gg            gg:call <sid>MercMove(1)<CR>
-    nnoremap <script> <silent> <buffer> G             G:call <sid>MercMove(-1)<CR>
-    " nnoremap <script> <silent> <buffer> P             :call <sid>MercPlayTo()<CR>
-    " nnoremap <script> <silent> <buffer> p             :call <sid>MercRenderChangePreview()<CR>
-    " nnoremap <script> <silent> <buffer> r             :call <sid>MercRenderPreview()<CR>
-    nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
-    cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
-    cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
-    " nnoremap <script> <silent> <buffer> <2-LeftMouse> :call <sid>MercMouseDoubleClick()<CR>
-endfunction "}}}
+function! s:GlogMap() 
+  nnoremap <buffer> q :silent bd!<CR>
+  nnoremap <script> <silent> <buffer> <CR>          :call <sid>BlameShowCS()<CR>
+  nnoremap <script> <silent> <buffer> k             :call <sid>MercMove(1)<CR>
+  nnoremap <script> <silent> <buffer> j             :call <sid>MercMove(-1)<CR>
+  nnoremap <script> <silent> <buffer> s             :call <sid>BlameShowCS()<CR>
+  nnoremap <script> <silent> <buffer> d             :call <sid>BlameDiffCS()<CR>
+  nnoremap <script> <silent> <buffer> c             :call <sid>BlameCatCS()<CR>
+  nnoremap <script> <silent> <buffer> <down>        :call <sid>MercMove(-1)<CR>
+  nnoremap <script> <silent> <buffer> <up>          :call <sid>MercMove(1)<CR>
+  nnoremap <script> <silent> <buffer> <C-U>         <C-U>:call <sid>MercMove(1)<CR>
+  nnoremap <script> <silent> <buffer> <C-D>         <C-D>:call <sid>MercMove(-1)<CR>
+  nnoremap <script> <silent> <buffer> gg            gg:call <sid>MercMove(1)<CR>
+  nnoremap <script> <silent> <buffer> G             G:call <sid>MercMove(-1)<CR>
+  " nnoremap <script> <silent> <buffer> P             :call <sid>MercPlayTo()<CR>
+  " nnoremap <script> <silent> <buffer> p             :call <sid>MercRenderChangePreview()<CR>
+  " nnoremap <script> <silent> <buffer> r             :call <sid>MercRenderPreview()<CR>
+  nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
+  cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
+  cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
+  " nnoremap <script> <silent> <buffer> <2-LeftMouse> :call <sid>MercMouseDoubleClick()<CR>
+endfunction
 
-function! s:GlogSyntax() "{{{
-    let b:current_syntax = 'glog'
+function! s:GlogSyntax() 
+  let b:current_syntax = 'glog'
 
-    syn match GlogCurrentLocation '@'
-    syn match GlogCs 'cs:'
-    syn match GlogSum 'summary:'
-    syn match GlogHelp '\v^".*$'
-    syn match GlogNumberField '\v\[[0-9a-f:]+\]'
-    syn match GlogHash '\v[0-9]+' contained containedin=GlogNumberField
-    syn match GlogNumber '\v[0-9a-f]{12}' contained containedin=GlogNumberField
+  syn match GlogCurrentLocation '@'
+  syn match GlogCs 'cs:'
+  syn match GlogSum 'summary:'
+  syn match GlogHelp '\v^".*$'
+  syn match GlogNumberField '\v\[[0-9a-f:]+\]'
+  syn match GlogHash '\v[0-9]+' contained containedin=GlogNumberField
+  syn match GlogNumber '\v[0-9a-f]{12}' contained containedin=GlogNumberField
 
-    hi def link GlogCurrentLocation Keyword
-    hi def link GlogCs Keyword
-    hi def link GlogSum Keyword
-    hi def link GlogHelp Comment
-    hi def link GlogNumberField label
-    hi def link GlogNumber Identifier
-    hi def link GlogHash Identifier
-endfunction"}}}
+  hi def link GlogCurrentLocation Keyword
+  hi def link GlogCs Keyword
+  hi def link GlogSum Keyword
+  hi def link GlogHelp Comment
+  hi def link GlogNumberField label
+  hi def link GlogNumber Identifier
+  hi def link GlogHash Identifier
+endfunction
 
-function! s:GlogSettings() "{{{
-    setlocal nospell 
-    setlocal nomodified 
-    setlocal nomodifiable
-    setlocal readonly 
-    setlocal noswapfile
-    setlocal nobuflisted
-    setlocal nolist
-    setlocal nonumber
-    setlocal norelativenumber
-    setlocal nowrap
-    setlocal bufhidden=
-    setlocal buftype=nofile
-    setlocal filetype=glog
-    " if &bufhidden ==# ''
-    "   " Delete the buffer when it becomes hidden
-    "   setlocal bufhidden=wipe
-    " endif
-    call s:GlogSyntax()
-    call s:GlogMap()
-endfunction "}}} 
+function! s:GlogSettings() 
+  setlocal nospell 
+  setlocal nomodified 
+  setlocal nomodifiable
+  setlocal readonly 
+  setlocal noswapfile
+  setlocal nobuflisted
+  setlocal nolist
+  setlocal nonumber
+  setlocal norelativenumber
+  setlocal nowrap
+  setlocal bufhidden=
+  setlocal buftype=nofile
+  setlocal filetype=glog
+  " if &bufhidden ==# ''
+  "   " Delete the buffer when it becomes hidden
+  "   setlocal bufhidden=wipe
+  " endif
+  call s:GlogSyntax()
+  call s:GlogMap()
+endfunction 
 
-
-function! s:method_handlers.glog(file) dict abort " {{{
-  let args = ['glog', '--template', 'cs:       [{rev}:{node|short}] {tags}\nsummary: {desc|firstline|fill68|tabindent|tabindent}\n\n', a:file]
+" }}}1
+" mercenary://root_dir//glog:filepath {{{1
+function! s:method_handlers.glog(filepath) dict abort 
+  let args = ['glog', '--template', 'cs:       [{rev}:{node|short}] {tags}\nsummary: {desc|firstline|fill68|tabindent|tabindent}\n\n', a:filepath]
   let hg_glog_cmd = call(s:repo().hg_command, args, s:repo())
 
   let temppath = resolve(tempname())
   let outfile = temppath . '.glog'
   let errfile = temppath . '.err'
 
-  echo hg_glog_cmd
   silent! execute '!'.hg_glog_cmd.' > '.outfile.' 2> '.errfile
   silent! execute 'read '.outfile
 
   call s:GlogSettings()
 
-endfunction " }}}1
+endfunction 
 
-augroup MercGlogAug " {{{
-    autocmd!
-    autocmd BufReadPost *.glog setfiletype glog
-    autocmd Syntax glog call s:GlogSyntax()
-augroup END " }}}1
+augroup MercGlogAug 
+  autocmd!
+  autocmd BufReadPost *.glog setfiletype glog
+  autocmd Syntax glog call s:GlogSyntax()
+augroup END 
 
 
-" mercenary://root_dir//qapplied {{{1
 " :HGqapplied {{{1
 function! s:HGqapplied() abort
-    execute 'edit '.s:gen_mercenary_path('qapplied')
+  execute 'edit '.s:gen_mercenary_path('qapplied')
 endfunction
 
 call s:add_command("-nargs=0 HGqapplied call s:HGqapplied()")
 
 " }}}1
 " mercenary://root_dir//qapplied {{{1
-
 function! s:method_handlers.qapplied() dict abort
   let args = ['qapplied']
   let hg_mq_applied_cmd = call(s:repo().hg_command, args, s:repo())
@@ -594,33 +642,35 @@ function! s:method_handlers.qapplied() dict abort
   nnoremap <buffer> <silent> l :<C-U>exe <SID>MqList('')<CR>
   nnoremap <buffer> <silent> + :<C-U>exe <SID>MqCommand('qpush')<CR>
   nnoremap <buffer> <silent> - :<C-U>exe <SID>MqCommand('qpop')<CR>
-  nnoremap <buffer> q :silent bd!<CR>
-  if &bufhidden ==# ''
-    " Delete the buffer when it becomes hidden
-    setlocal bufhidden=wipe
-  endif
+  nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
+  cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
+  cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
+  " if &bufhidden ==# ''
+  "   " Delete the buffer when it becomes hidden
+  "   setlocal bufhidden=wipe
+  " endif
 
 endfunction
 
 " Process the selection of a queue
 function! s:MqList(suffix) abort
-    let qname = getline('.')
-    echo "List ".qname
+  let qname = getline('.')
+  echo "List ".qname
 endfunction
 
 function! s:MqCommand(cmd) abort
-    let qname = getline('.')
-    echo a:cmd . qname
+  let qname = getline('.')
+  echo a:cmd . qname
 endfunction
 
 augroup mercurial_queue
-    autocmd BufReadPost *.mqlist setfiletype mqlist
-    autocmd Syntax mqlist call s:MqListSyntax()
+  autocmd BufReadPost *.mqlist setfiletype mqlist
+  autocmd Syntax mqlist call s:MqListSyntax()
 augroup END
 
 function! s:MqListSyntax() abort
-    syn match MercenaryQName "^.*"
-    hi def link MercenaryQName Keyword
+  syn match MercenaryQName "^.*"
+  hi def link MercenaryQName Keyword
 
 endfunction
 
@@ -628,10 +678,12 @@ endfunction
 " :HGdiff {{{1
 
 function! s:Diff(...) abort
+  let source_bufnr=s:buffer().bufnr()
   if a:0 == 0
     let merc_p1_path = s:gen_mercenary_path('cat', 'p1()', s:buffer().relpath())
 
     silent! execute 'keepalt leftabove vsplit ' . merc_p1_path
+    let b:source_bufnr = source_bufnr 
     diffthis
     wincmd p
 
@@ -640,6 +692,7 @@ function! s:Diff(...) abort
     if system(hg_parent_check_log_cmd) != ''
       let merc_p2_path = s:gen_mercenary_path('cat', 'p2()', s:buffer().relpath())
       silent! execute 'keepalt rightbelow vsplit ' . merc_p2_path
+      let b:source_bufnr = source_bufnr 
       diffthis
       wincmd p
     endif
@@ -651,6 +704,7 @@ function! s:Diff(...) abort
     let merc_path = s:gen_mercenary_path('cat', rev, s:buffer().relpath())
 
     silent! execute 'keepalt leftabove vsplit ' . merc_path
+    let b:source_bufnr = source_bufnr 
     diffthis
     wincmd p
 
