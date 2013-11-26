@@ -56,6 +56,18 @@ function! s:shellesc(arg) abort
   endif
 endfunction
 
+function! s:mercenary_spec(path) abort
+  return matchstr(s:shellslash( a:path ), '\C^mercenary://.\{-\}//\zs.*')
+endfunction
+
+function! s:mercenary_method(path) abort
+    return matchstr( s:mercenary_spec(a:path), '\C.\{-\}\ze:')
+endfunction
+
+function! s:mercenary_args(path) abort
+    return split(matchstr( s:mercenary_spec(a:path), '\C:\zs.*'), '//')
+endfunction
+
 function! s:warn(str)
   echohl WarningMsg
   echomsg a:str
@@ -162,6 +174,7 @@ function! s:buffer(...)
   return s:buffer_cache[bufnr]
 endfunction
 
+
 let s:Buffer = {}
 function! s:Buffer.new(number) dict abort
   let buffer = {
@@ -203,12 +216,77 @@ function! s:Buffer.repo() dict abort
   return s:repo(s:extract_hg_root_dir(self.path()))
 endfunction
 
+function! s:Buffer.mercenary_spec() dict abort
+  return s:mercenary_spec(self.path() )
+endfunction
+
+function! s:Buffer.method() dict abort
+  return s:mercenary_method(self.path() )
+endfunction
+
+function! s:Buffer.arguments() dict abort
+  return s:mercenary_args(self.path() )
+endfunction
+
+function! s:Buffer.parent() dict abort
+  let parent = self.getvar("source_bufnr")
+  if ( ! bufexists(parent) ) 
+    let parent = 0
+  endif
+  return parent
+endfunction
+
+function! s:Buffer.children() dict abort
+  let children = []
+  for b in range(1, bufnr('$'))
+    if ( bufexists(b) )
+      echom "testing " . b . " against " . self.bufnr() . " -  " . getbufvar(b,"source_bufnr")
+      if ( self.bufnr() == getbufvar(b,"source_bufnr"))
+        call add( children, b )
+      endif
+    endif
+  endfor
+  return children
+endfunction
+
+function! s:Buffer.chain() dict abort
+  let chain = [self.bufnr()]
+  while 1
+    let nextparent = getbufvar(chain[-1], "source_bufnr")
+    if ( ! nextparent )
+      break
+    endif
+    call add( chain, nextparent )
+  endwhile 
+  return chain
+endfunction
+
 function! s:Buffer.onwinleave(cmd) dict abort
   call setwinvar(bufwinnr(self.bufnr()), 'mercenary_bufwinleave', a:cmd)
 endfunction
 
 function! s:Buffer_winleave(bufnr) abort
   execute getwinvar(bufwinnr(a:bufnr), 'mercenary_bufwinleave')
+endfunction
+
+function! s:Buffer.dump() dict abort
+  echom "buffer number " . self.bufnr()
+  echom "    keys " . join( keys( self ), ', ')
+  echom "    arguments " . join( self.arguments(), ', ')
+  echom "    merc spec " . self.mercenary_spec()
+  echom "    method " . self.method()
+  echom "    path " . self.path()
+  echom "    relpath " . self.relpath()
+  echom "    rootdir " . s:extract_hg_root_dir( self.path() )
+  echom "    parent " . self.parent()
+  echom "    children " . join( self.children(), ', ' )
+  echom "    chain " . join( self.chain(), ', ')
+  try
+    echom "    repo " . self.repo()
+  catch
+    echom "    repo : none"
+  endtry
+  echom "    winleave " . getwinvar(self.bufnr(), 'mercenary_bufwinleave')
 endfunction
 
 augroup mercenary_buffer
@@ -248,18 +326,21 @@ function! s:MercMove(direction) range "{{{
   endwhile
 endfunction"}}}
 
-function! s:MercClose() "{{{
-  " relies on bclose.vim - might have to come back to this.
-  if ! exists( "b:source_bufnr" ) || ! bufexists( "b:source_bufnr" )
-    echo "bufnr not recorded"
-    if exists(":Bclose")
-      :Bclose
-    else
-      quit
-    endif
-  else
+function! s:MercClose(...) "{{{
+  let tbuf = s:buffer(a:0 ? a:1 : bufnr('%'))
+  
+  for b in tbuf.children()
+    call s:MercClose(b)
+  endfor
+
+  if 'diff' == tbuf.method()
     diffoff!
-    let winnr = bufwinnr( b:source_bufnr )
+    quit
+  elseif index( [ 'blame', 'glog', 'qapplied' ], tbuf.method() ) != -1
+    quit
+  else
+    echom join( tbuf.chain() , ', ' )
+    let winnr = bufwinnr( tbuf.chain()[0] )
     if winnr != -1 
       quit
       execute winnr . "wincmd w"
@@ -267,6 +348,14 @@ function! s:MercClose() "{{{
       execute b:source_bufnr . "buffer"
     endif
   endif
+
+  " if ! exists( "b:source_bufnr" ) || ! bufexists( "b:source_bufnr" )
+  "   echom "bufnr not recorded"
+  "   quit
+  " else
+  "   echom "test method"
+  "   endif 
+  " endif
   " hide
 endfunction "}}}
 
@@ -275,6 +364,7 @@ endfunction "}}}
 let s:method_handlers = {}
 
 function! s:route(path) abort
+  nnoremap <script> <silent> <buffer> ?  :call <sid>buffer().dump()<CR>
   let hg_root_dir = s:extract_hg_root_dir(a:path)
   if hg_root_dir == ''
     return
@@ -282,12 +372,19 @@ function! s:route(path) abort
 
   let mercenary_spec = matchstr(s:shellslash(a:path), '\C^mercenary://.\{-\}//\zs.*')
 
-  if mercenary_spec != ''
+  echom a:path
+  echom mercenary_spec
+  echom s:mercenary_spec(a:path)
+  echom s:buffer().method()
+  
+  if s:mercenary_spec(a:path) != ''
     " Route the mercenary:// path
-    let method = matchstr(mercenary_spec, '\C.\{-\}\ze:')
+    let method = s:mercenary_method(a:path)
+    echom method
 
     " Arguments to the mercenary:// methods are delimited by //
-    let args = split(matchstr(mercenary_spec, '\C:\zs.*'), '//')
+    let args = s:mercenary_args(a:path)
+    echom join(args,', ')
 
     try
       if has_key(s:method_handlers, method)
@@ -350,8 +447,9 @@ function! s:Blame() abort
 
   setlocal scrollbind nowrap nofoldenable
   exe 'keepalt leftabove vsplit ' . outfile
-  setlocal nomodified nomodifiable nonumber scrollbind nowrap foldcolumn=0 nofoldenable filetype=mercenaryblame
+  setlocal winfixwidth nomodified nomodifiable nonumber scrollbind nowrap foldcolumn=0 nofoldenable filetype=mercenaryblame
   let b:source_bufnr = source_bufnr 
+  nnoremap <script> <silent> <buffer> ?             :call <sid>buffer().dump()<CR>
   nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
   cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
   cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
@@ -378,7 +476,6 @@ function! s:Blame() abort
   let blame_column_count = strlen(matchstr(getline('.'), '[^:]*:')) - 1
   execute "vertical resize " . blame_column_count
 
-  " TODO(jlfwong): Maybe use winfixwidth to stop resizing of the blame window
 endfunction
 
 function! s:BlameGetCS() abort
@@ -387,38 +484,46 @@ function! s:BlameGetCS() abort
 endfunction
 
 function! s:BlameSync() abort
-  let csnum = s:BlameGetCS() 
-  if csnum == ''
+  let result = {
+    \  'restore_bufnr' : s:buffer().bufnr(),
+    \  'csnum' : s:BlameGetCS(),
+  \}
+  if result.csnum == ''
     echo "Invalid Changest"
-    return -1
   elseif ! exists( "b:source_bufnr" )
     echo "invalid reference buffer"
-    return -1
+    result.csnum = ''
   else
     execute bufwinnr( b:source_bufnr ).' wincmd w '
   endif
-  return csnum
+  return result
 endfunction
 
 function! s:BlameCatCS() abort
-  let csnum = s:BlameSync()
-  if -1 != csnum
-    call s:Cat( csnum, s:buffer().relpath() )
+  let sync = s:BlameSync()
+  if -1 != sync.csnum
+    call s:Cat( sync.csnum, s:buffer().relpath(), s:buffer().bufnr() )
   endif
+  let b:source_bufnr = sync.restore_bufnr
+  execute bufwinnr( sync.restore_bufnr ).' wincmd w '
 endfunction
 
 function! s:BlameDiffCS() abort
-  let csnum = s:BlameSync()
-  if -1 != csnum
-    call s:Diff( csnum )
+  let sync = s:BlameSync()
+  if -1 != sync.csnum
+    call s:Diff( sync.csnum )
   endif
+  let b:source_bufnr = sync.restore_bufnr
+  execute bufwinnr( sync.restore_bufnr ).' wincmd w '
 endfunction
 
 function! s:BlameShowCS() abort
-  let csnum = s:BlameSync()
-  if -1 != csnum
-    call s:Show( csnum )
+  let sync = s:BlameSync()
+  if -1 != sync.csnum
+    call s:Show( sync.csnum )
   endif
+  let b:source_bufnr = sync.restore_bufnr
+  execute bufwinnr( sync.restore_bufnr ).' wincmd w '
 endfunction
 
 call s:add_command("HGblame call s:Blame()")
@@ -431,8 +536,8 @@ augroup END
 " }}}1
 " :HGcat {{{1
 
-function! s:Cat(rev, path) abort
-  let source_bufnr = s:buffer().bufnr()
+function! s:Cat(rev, path, ...) abort
+  let source_bufnr = a:0 ? a:1 : s:buffer().bufnr()
   execute 'edit ' . s:gen_mercenary_path('cat', a:rev, a:path)
   let b:source_bufnr = source_bufnr
 endfunction
@@ -459,14 +564,15 @@ function! s:method_handlers.cat(rev, filepath) dict abort
   0d
 
   setlocal nomodified nomodifiable readonly
+  nnoremap <script> <silent> <buffer> ?             :call <sid>buffer().dump()<CR>
   nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
   cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
   cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
 
-  " if &bufhidden ==# ''
-  "   " Delete the buffer when it becomes hidden
-  "   setlocal bufhidden=wipe
-  " endif
+  if &bufhidden ==# ''
+    " Delete the buffer when it becomes hidden
+    setlocal bufhidden=wipe
+  endif
 endfunction
 " }}}1
 
@@ -501,14 +607,15 @@ function! s:method_handlers.show(rev) dict abort
 
   setlocal nomodified nomodifiable readonly
   setlocal filetype=diff
+  nnoremap <script> <silent> <buffer> ?             :call <sid>buffer().dump()<CR>
   nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
   cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
   cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
 
-  " if &bufhidden ==# ''
-  "   " Delete the buffer when it becomes hidden
-  "   setlocal bufhidden=wipe
-  " endif
+  if &bufhidden ==# ''
+    " Delete the buffer when it becomes hidden
+    setlocal bufhidden=wipe
+  endif
 endfunction
 
 " }}}1
@@ -530,6 +637,7 @@ call s:add_command("-nargs=? -complete=file HGlog call s:HGlog(<f-args>)")
 function! s:GlogMap() 
   nnoremap <buffer> q :silent bd!<CR>
   nnoremap <script> <silent> <buffer> <CR>          :call <sid>BlameShowCS()<CR>
+  nnoremap <script> <silent> <buffer> ?             :call <sid>buffer().dump()<CR>
   nnoremap <script> <silent> <buffer> k             :call <sid>MercMove(1)<CR>
   nnoremap <script> <silent> <buffer> j             :call <sid>MercMove(-1)<CR>
   nnoremap <script> <silent> <buffer> s             :call <sid>BlameShowCS()<CR>
@@ -597,7 +705,7 @@ endfunction
 function! s:method_handlers.glog(filepath) dict abort 
   let args = ['glog', '--template', 'cs:       [{rev}:{node|short}] {tags}\nsummary: {desc|firstline|fill68|tabindent|tabindent}\n\n', a:filepath]
   let hg_glog_cmd = call(s:repo().hg_command, args, s:repo())
-
+echom hg_glog_cmd
   let temppath = resolve(tempname())
   let outfile = temppath . '.glog'
   let errfile = temppath . '.err'
@@ -642,6 +750,7 @@ function! s:method_handlers.qapplied() dict abort
   nnoremap <buffer> <silent> l :<C-U>exe <SID>MqList('')<CR>
   nnoremap <buffer> <silent> + :<C-U>exe <SID>MqCommand('qpush')<CR>
   nnoremap <buffer> <silent> - :<C-U>exe <SID>MqCommand('qpop')<CR>
+  nnoremap <script> <silent> <buffer> ?             :call <sid>buffer().dump()<CR>
   nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
   cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
   cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
