@@ -127,7 +127,7 @@ function! s:repo(...)
   " anywhere inside the repository. Otherwise, the repository containing the
   " file in the current buffer is used.
   if !a:0
-    return s:buffer().repo()
+    return s:buffer().base().repo()
   endif
 
   let root_dir = a:1
@@ -167,6 +167,10 @@ function! s:buffer(...)
   " the buffer number. Otherwise the buffer number of the active buffer is used.
   let bufnr = a:0 ? a:1 : bufnr('%')
 
+  if ! bufexists( bufnr )
+    return {}
+  endif
+
   if !has_key(s:buffer_cache, bufnr)
     let s:buffer_cache[bufnr] = s:Buffer.new(bufnr)
   endif
@@ -174,6 +178,46 @@ function! s:buffer(...)
   return s:buffer_cache[bufnr]
 endfunction
 
+function! s:set_common_methods()
+  setlocal nomodified nomodifiable readonly
+  nnoremap <script> <silent> <buffer> ?             :call <sid>buffer().dump()<CR>
+  nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
+  cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
+  cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
+  nnoremap <buffer> <silent> s                      :<C-U>exe <SID>BlameShowCS()<CR>
+  nnoremap <buffer> <silent> c                      :<C-U>exe <SID>BlameCatCS()<CR>
+  nnoremap <buffer> <silent> d                      :<C-U>exe <SID>BlameDiffCS()<CR>
+  if s:buffer().method() == "cat"
+    execute "setlocal filetype=" . s:buffer().base().getvar("&filetype")
+  endif
+endfunction
+
+function! s:buffer_cache.vsplit( ... ) dict abort
+  let location = a:0 ? a:1 : "leftabove"
+  silent execute 'keepalt ' . location . ' vsplit ' 
+  let newwinnr = winnr()
+  let w:usequit = 1
+  wincmd p 
+  return newwinnr
+endfunction
+
+function! s:buffer_cache.edit( winnr, path, ... ) dict abort
+  let options = a:0 ? a:1 : {}
+
+  let parentbuf = s:buffer().bufnr()
+  execute "silent setlocal ". get( options, "preopt", "" )
+  execute a:winnr .'wincmd w'
+  let restore = s:buffer().restore_setting()
+  let restore.source_bufnr = parentbuf
+  silent execute 'edit  ' . a:path
+  let nbuf =  s:buffer()
+  call nbuf.set_restore( restore )
+  call s:set_common_methods()
+  execute "silent setlocal ". get( options, "postopt", "" )
+  redraw!
+  wincmd p 
+  return nbuf
+endfunction
 
 let s:Buffer = {}
 function! s:Buffer.new(number) dict abort
@@ -181,6 +225,19 @@ function! s:Buffer.new(number) dict abort
         \"_number" : a:number
         \}
   return s:clsinit(buffer, self)
+endfunction
+
+function! s:Buffer.close() dict abort
+  let tbufnr = self.bufnr()
+  if getwinvar( self.winnr(), "usequit", 0 )
+    quit
+  endif
+  execute "bwipe ". tbufnr
+  try 
+    execute remove( s:buffer_cache, tbufnr )
+  catch
+    echom "no such buffer in cache"
+  endtry
 endfunction
 
 function! s:Buffer.path() dict abort
@@ -195,6 +252,10 @@ function! s:Buffer.bufnr() dict abort
   return self["_number"]
 endfunction
 
+function! s:Buffer.winnr() dict abort
+  return bufwinnr( self.bufnr() )
+endfunction
+
 function! s:Buffer.enable_mercenary_commands() dict abort
   " TODO(jlfwong): This is horribly wrong if the buffer isn't active
   for command in s:mercenary_commands
@@ -202,12 +263,10 @@ function! s:Buffer.enable_mercenary_commands() dict abort
   endfor
 endfunction
 
-" XXX(jlfwong) unused
 function! s:Buffer.getvar(var) dict abort
   return getbufvar(self.bufnr(), a:var)
 endfunction
 
-" XXX(jlfwong) unused
 function! s:Buffer.setvar(var, value) dict abort
   return setbufvar(self.bufnr(), a:var, a:value)
 endfunction
@@ -228,19 +287,38 @@ function! s:Buffer.arguments() dict abort
   return s:mercenary_args(self.path() )
 endfunction
 
+function! s:Buffer.restore_setting() dict abort
+  " Remember the bufnr that :HGblame was invoked in
+  let source_bufnr = self.bufnr()
+
+  " Save the settings in the main buffer to be overridden so they can be
+  " restored when the buffer is closed
+  let restore = ""
+  for prop in [ "&scrollbind", "&wrap", "&foldenable" ]
+    let origval = self.getvar( prop )
+    let restore .= '|call setwinvar(bufwinnr(' . source_bufnr . '), "&wrap", ' . origval . ')'
+  endfor
+  let restore .= "|" . source_bufnr . 'buffer' 
+  return { "restore" : restore, "source_bufnr" : source_bufnr }
+endfunction
+
+function! s:Buffer.set_restore( restore_vals ) dict abort
+  call self.setvar( "source_bufnr", a:restore_vals["source_bufnr"] )
+  let restore_cmd = a:restore_vals["restore"]
+  call self.onwinleave( restore_cmd  )
+  " When the current buffer containing the blame leaves the window, restore the
+  " settings on the source window.
+endfunction
+
 function! s:Buffer.parent() dict abort
   let parent = self.getvar("source_bufnr")
-  if ( ! bufexists(parent) ) 
-    let parent = 0
-  endif
-  return parent
+  return s:buffer( parent )
 endfunction
 
 function! s:Buffer.children() dict abort
   let children = []
   for b in range(1, bufnr('$'))
     if ( bufexists(b) )
-      echom "testing " . b . " against " . self.bufnr() . " -  " . getbufvar(b,"source_bufnr")
       if ( self.bufnr() == getbufvar(b,"source_bufnr"))
         call add( children, b )
       endif
@@ -261,8 +339,12 @@ function! s:Buffer.chain() dict abort
   return chain
 endfunction
 
+function! s:Buffer.base() dict abort
+  return s:buffer( self.chain()[-1] )
+endfunction
+
 function! s:Buffer.onwinleave(cmd) dict abort
-  call setwinvar(bufwinnr(self.bufnr()), 'mercenary_bufwinleave', a:cmd)
+  call setwinvar( self.winnr(), 'mercenary_bufwinleave', a:cmd )
 endfunction
 
 function! s:Buffer_winleave(bufnr) abort
@@ -278,15 +360,18 @@ function! s:Buffer.dump() dict abort
   echom "    path " . self.path()
   echom "    relpath " . self.relpath()
   echom "    rootdir " . s:extract_hg_root_dir( self.path() )
-  echom "    parent " . self.parent()
   echom "    children " . join( self.children(), ', ' )
   echom "    chain " . join( self.chain(), ', ')
+  echom "    base " . self.base().bufnr() . " - " . self.base().relpath()
   try
+    echom "    parent " . self.parent().bufnr()
     echom "    repo " . self.repo()
   catch
     echom "    repo : none"
   endtry
-  echom "    winleave " . getwinvar(self.bufnr(), 'mercenary_bufwinleave')
+  echom "    restore : " string( self.restore_setting() )
+  echom "    usequit? " . getwinvar( self.winnr(), "usequit" )
+  echom "    winleave " . getwinvar( self.winnr(), 'mercenary_bufwinleave')
 endfunction
 
 augroup mercenary_buffer
@@ -327,36 +412,16 @@ function! s:MercMove(direction) range "{{{
 endfunction"}}}
 
 function! s:MercClose(...) "{{{
-  let tbuf = s:buffer(a:0 ? a:1 : bufnr('%'))
+  let tbuf = a:0 ? s:buffer(a:1) : s:buffer()
   
   for b in tbuf.children()
-    call s:MercClose(b)
+    if ( b != tbuf.bufnr() && bufexists(b) )
+      call s:MercClose(b)
+    endif
   endfor
 
-  if 'diff' == tbuf.method()
-    diffoff!
-    quit
-  elseif index( [ 'blame', 'glog', 'qapplied' ], tbuf.method() ) != -1
-    quit
-  else
-    echom join( tbuf.chain() , ', ' )
-    let winnr = bufwinnr( tbuf.chain()[0] )
-    if winnr != -1 
-      quit
-      execute winnr . "wincmd w"
-    else
-      execute b:source_bufnr . "buffer"
-    endif
-  endif
-
-  " if ! exists( "b:source_bufnr" ) || ! bufexists( "b:source_bufnr" )
-  "   echom "bufnr not recorded"
-  "   quit
-  " else
-  "   echom "test method"
-  "   endif 
-  " endif
-  " hide
+  call tbuf.close()
+  redraw!
 endfunction "}}}
 
 " }}}1
@@ -372,19 +437,19 @@ function! s:route(path) abort
 
   let mercenary_spec = matchstr(s:shellslash(a:path), '\C^mercenary://.\{-\}//\zs.*')
 
-  echom a:path
-  echom mercenary_spec
-  echom s:mercenary_spec(a:path)
-  echom s:buffer().method()
+  " echom a:path
+  " echom mercenary_spec
+  " echom s:mercenary_spec(a:path)
+  " echom s:buffer().method()
   
   if s:mercenary_spec(a:path) != ''
     " Route the mercenary:// path
     let method = s:mercenary_method(a:path)
-    echom method
+    " echom method
 
     " Arguments to the mercenary:// methods are delimited by //
     let args = s:mercenary_args(a:path)
-    echom join(args,', ')
+    " echom join(args,', ')
 
     try
       if has_key(s:method_handlers, method)
@@ -427,40 +492,17 @@ function! s:Blame() abort
   " Write the blame output to a .mercenaryblame file in a temp folder somewhere
   silent! execute '!' . hg_blame_command . ' > ' . outfile . ' 2> ' . errfile
 
-  " Remember the bufnr that :HGblame was invoked in
-  let source_bufnr = s:buffer().bufnr()
-
-  " Save the settings in the main buffer to be overridden so they can be
-  " restored when the buffer is closed
-  let restore = 'call setwinvar(bufwinnr(' . source_bufnr . '), "&scrollbind", 0)'
-  if &l:wrap
-    let restore .= '|call setwinvar(bufwinnr(' . source_bufnr . '), "&wrap", 1)'
-  endif
-  if &l:foldenable
-    let restore .= '|call setwinvar(bufwinnr(' . source_bufnr . '), "&foldenable", 1)'
-  endif
-
   " Line number of the first visible line in the window + &scrolloff
   let top = line('w0') + &scrolloff
   " Line number of the cursor
   let current = line('.')
 
-  setlocal scrollbind nowrap nofoldenable
-  exe 'keepalt leftabove vsplit ' . outfile
-  setlocal winfixwidth nomodified nomodifiable nonumber scrollbind nowrap foldcolumn=0 nofoldenable filetype=mercenaryblame
-  let b:source_bufnr = source_bufnr 
-  nnoremap <script> <silent> <buffer> ?             :call <sid>buffer().dump()<CR>
-  nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
-  cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
-  cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
-  nnoremap <buffer> <silent> s :<C-U>exe <SID>BlameShowCS()<CR>
-  nnoremap <buffer> <silent> c :<C-U>exe <SID>BlameCatCS()<CR>
-  nnoremap <buffer> <silent> d :<C-U>exe <SID>BlameDiffCS()<CR>
+  let winnr = s:buffer_cache.vsplit( "leftabove" )
+  let blamebuf = s:buffer_cache.edit( winnr, outfile, { 
+    \ "preopt" : "scrollbind cursorbind nowrap nofoldenable" ,
+    \ "postopt" : "winfixwidth nomodified nospell nomodifiable nonumber scrollbind cursorbind nowrap foldcolumn=0 nofoldenable filetype=mercenaryblame" } )
 
-  " When the current buffer containing the blame leaves the window, restore the
-  " settings on the source window.
-  call s:buffer().onwinleave(restore)
-
+  execute blamebuf.winnr() . "wincmd w"
   " Synchronize the window position and cursor position between the blame buffer
   " and the code buffer.
   " Execute the line number as a command, focusing on that line (e.g. :23) to
@@ -475,6 +517,7 @@ function! s:Blame() abort
   " code (the code is shown in the editing buffer :HGblame was invoked in).
   let blame_column_count = strlen(matchstr(getline('.'), '[^:]*:')) - 1
   execute "vertical resize " . blame_column_count
+  wincmd p
 
 endfunction
 
@@ -485,16 +528,33 @@ endfunction
 
 function! s:BlameSync() abort
   let result = {
-    \  'restore_bufnr' : s:buffer().bufnr(),
+    \  'source' : s:buffer(),
     \  'csnum' : s:BlameGetCS(),
+    \  'path' : s:buffer().base().relpath(),
   \}
-  if result.csnum == ''
-    echo "Invalid Changest"
-  elseif ! exists( "b:source_bufnr" )
-    echo "invalid reference buffer"
-    result.csnum = ''
+  
+  " how to decide where to put non-split edits... 
+  "  1) any visible window that matches the base()
+  "  2) any visible window that is a current child()
+  "  3) any visible  window that is not itself
+  "  split.
+  "
+  let twin = s:buffer().base().winnr()
+  if twin 
+    let result.target_win = twin
   else
-    execute bufwinnr( b:source_bufnr ).' wincmd w '
+    let children = s:buffer().children()
+    let visible_children = filter( children, bufwinnr(v:val) )
+    try
+      let result.target_win = visible_children[0]
+    catch
+      let visible = range( 1, winnr('$') )
+      " any merc.method()
+      "TODO
+      " next visible one
+      call remove( visible, s:buffer().winnr() )
+      let result.target_win = visible_children[0]
+    endtry
   endif
   return result
 endfunction
@@ -502,28 +562,28 @@ endfunction
 function! s:BlameCatCS() abort
   let sync = s:BlameSync()
   if -1 != sync.csnum
-    call s:Cat( sync.csnum, s:buffer().relpath(), s:buffer().bufnr() )
+    call s:buffer_cache.edit( sync.target_win, s:gen_mercenary_path('cat', sync.csnum, sync.path) )
+  else 
+    echom "Could not find repository reference on this line."
   endif
-  let b:source_bufnr = sync.restore_bufnr
-  execute bufwinnr( sync.restore_bufnr ).' wincmd w '
 endfunction
 
 function! s:BlameDiffCS() abort
   let sync = s:BlameSync()
   if -1 != sync.csnum
     call s:Diff( sync.csnum )
+  else 
+    echom "Could not find repository reference on this line."
   endif
-  let b:source_bufnr = sync.restore_bufnr
-  execute bufwinnr( sync.restore_bufnr ).' wincmd w '
 endfunction
 
 function! s:BlameShowCS() abort
   let sync = s:BlameSync()
   if -1 != sync.csnum
-    call s:Show( sync.csnum )
+    call s:buffer_cache.edit( sync.target_win, s:gen_mercenary_path('show', sync.csnum) )
+  else 
+    echom "Could not find repository reference on this line."
   endif
-  let b:source_bufnr = sync.restore_bufnr
-  execute bufwinnr( sync.restore_bufnr ).' wincmd w '
 endfunction
 
 call s:add_command("HGblame call s:Blame()")
@@ -536,10 +596,9 @@ augroup END
 " }}}1
 " :HGcat {{{1
 
-function! s:Cat(rev, path, ...) abort
-  let source_bufnr = a:0 ? a:1 : s:buffer().bufnr()
-  execute 'edit ' . s:gen_mercenary_path('cat', a:rev, a:path)
-  let b:source_bufnr = source_bufnr
+function! s:Cat(rev, ...) abort
+  let path = a:0 ? a:1 : s:buffer().path()
+  call s:buffer_cache.edit( winnr(), s:gen_mercenary_path('cat', a:rev, path) )
 endfunction
 
 call s:add_command("-nargs=+ -complete=file HGcat call s:Cat(<f-args>)")
@@ -563,16 +622,6 @@ function! s:method_handlers.cat(rev, filepath) dict abort
   " (which will be empty)
   0d
 
-  setlocal nomodified nomodifiable readonly
-  nnoremap <script> <silent> <buffer> ?             :call <sid>buffer().dump()<CR>
-  nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
-  cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
-  cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
-
-  if &bufhidden ==# ''
-    " Delete the buffer when it becomes hidden
-    setlocal bufhidden=wipe
-  endif
 endfunction
 " }}}1
 
@@ -580,9 +629,7 @@ endfunction
 " :HGshow {{{1
 
 function! s:Show(rev) abort
-  let source_bufnr = s:buffer().bufnr()
-  execute 'edit ' . s:gen_mercenary_path('show', a:rev)
-  let b:source_bufnr = source_bufnr
+  call s:buffer_cache.edit( winnr(), s:gen_mercenary_path('show', a:rev) )
 endfunction
 
 call s:add_command("-nargs=1 HGshow call s:Show(<f-args>)")
@@ -605,17 +652,7 @@ function! s:method_handlers.show(rev) dict abort
   silent! execute 'read ' . outfile
   0d
 
-  setlocal nomodified nomodifiable readonly
   setlocal filetype=diff
-  nnoremap <script> <silent> <buffer> ?             :call <sid>buffer().dump()<CR>
-  nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
-  cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
-  cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
-
-  if &bufhidden ==# ''
-    " Delete the buffer when it becomes hidden
-    setlocal bufhidden=wipe
-  endif
 endfunction
 
 " }}}1
@@ -626,10 +663,8 @@ function! s:HGlog(...) abort
   elseif a:0 == 1
     let file=a:1
   end
-  let source_bufnr = s:buffer().bufnr()
-  exe 'keepalt leftabove vsplit ' .s:gen_mercenary_path('glog', file) 
-  let b:source_bufnr = source_bufnr 
-  " execute 'edit '.s:gen_mercenary_path('glog', file)
+  let winnr = s:buffer_cache.vsplit()
+  call s:buffer_cache.edit( winnr, s:gen_mercenary_path('glog', file) )
 endfunction
 
 call s:add_command("-nargs=? -complete=file HGlog call s:HGlog(<f-args>)")
@@ -637,12 +672,8 @@ call s:add_command("-nargs=? -complete=file HGlog call s:HGlog(<f-args>)")
 function! s:GlogMap() 
   nnoremap <buffer> q :silent bd!<CR>
   nnoremap <script> <silent> <buffer> <CR>          :call <sid>BlameShowCS()<CR>
-  nnoremap <script> <silent> <buffer> ?             :call <sid>buffer().dump()<CR>
   nnoremap <script> <silent> <buffer> k             :call <sid>MercMove(1)<CR>
   nnoremap <script> <silent> <buffer> j             :call <sid>MercMove(-1)<CR>
-  nnoremap <script> <silent> <buffer> s             :call <sid>BlameShowCS()<CR>
-  nnoremap <script> <silent> <buffer> d             :call <sid>BlameDiffCS()<CR>
-  nnoremap <script> <silent> <buffer> c             :call <sid>BlameCatCS()<CR>
   nnoremap <script> <silent> <buffer> <down>        :call <sid>MercMove(-1)<CR>
   nnoremap <script> <silent> <buffer> <up>          :call <sid>MercMove(1)<CR>
   nnoremap <script> <silent> <buffer> <C-U>         <C-U>:call <sid>MercMove(1)<CR>
@@ -652,9 +683,6 @@ function! s:GlogMap()
   " nnoremap <script> <silent> <buffer> P             :call <sid>MercPlayTo()<CR>
   " nnoremap <script> <silent> <buffer> p             :call <sid>MercRenderChangePreview()<CR>
   " nnoremap <script> <silent> <buffer> r             :call <sid>MercRenderPreview()<CR>
-  nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
-  cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
-  cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
   " nnoremap <script> <silent> <buffer> <2-LeftMouse> :call <sid>MercMouseDoubleClick()<CR>
 endfunction
 
@@ -705,7 +733,6 @@ endfunction
 function! s:method_handlers.glog(filepath) dict abort 
   let args = ['glog', '--template', 'cs:       [{rev}:{node|short}] {tags}\nsummary: {desc|firstline|fill68|tabindent|tabindent}\n\n', a:filepath]
   let hg_glog_cmd = call(s:repo().hg_command, args, s:repo())
-echom hg_glog_cmd
   let temppath = resolve(tempname())
   let outfile = temppath . '.glog'
   let errfile = temppath . '.err'
@@ -726,7 +753,8 @@ augroup END
 
 " :HGqapplied {{{1
 function! s:HGqapplied() abort
-  execute 'edit '.s:gen_mercenary_path('qapplied')
+  let winnr = s:buffer_cache.vsplit()
+  call s:buffer_cache.edit( winnr, s:gen_mercenary_path('qapplied' ) )
 endfunction
 
 call s:add_command("-nargs=0 HGqapplied call s:HGqapplied()")
@@ -750,10 +778,10 @@ function! s:method_handlers.qapplied() dict abort
   nnoremap <buffer> <silent> l :<C-U>exe <SID>MqList('')<CR>
   nnoremap <buffer> <silent> + :<C-U>exe <SID>MqCommand('qpush')<CR>
   nnoremap <buffer> <silent> - :<C-U>exe <SID>MqCommand('qpop')<CR>
-  nnoremap <script> <silent> <buffer> ?             :call <sid>buffer().dump()<CR>
-  nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
-  cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
-  cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
+  nnoremap <script> <silent> <buffer> ?   :call <sid>buffer().dump()<CR>
+  nnoremap <script> <silent> <buffer> q   :call <sid>MercClose()<CR>
+  cabbrev  <script> <silent> <buffer> q    call <sid>MercClose()
+  cabbrev  <script> <silent> <buffer> quit call <sid>MercClose()
   " if &bufhidden ==# ''
   "   " Delete the buffer when it becomes hidden
   "   setlocal bufhidden=wipe
@@ -787,12 +815,11 @@ endfunction
 " :HGdiff {{{1
 
 function! s:Diff(...) abort
-  let source_bufnr=s:buffer().bufnr()
   if a:0 == 0
     let merc_p1_path = s:gen_mercenary_path('cat', 'p1()', s:buffer().relpath())
 
-    silent! execute 'keepalt leftabove vsplit ' . merc_p1_path
-    let b:source_bufnr = source_bufnr 
+    let winnr = s:buffer_cache.vsplit()
+    call s:buffer_cache.edit( winnr, merc_p1_path )
     diffthis
     wincmd p
 
@@ -800,8 +827,8 @@ function! s:Diff(...) abort
 
     if system(hg_parent_check_log_cmd) != ''
       let merc_p2_path = s:gen_mercenary_path('cat', 'p2()', s:buffer().relpath())
-      silent! execute 'keepalt rightbelow vsplit ' . merc_p2_path
-      let b:source_bufnr = source_bufnr 
+      let winnr = s:buffer_cache.vsplit("rightbelow")
+      call s:buffer_cache.edit( winnr, merc_p2_path )
       diffthis
       wincmd p
     endif
@@ -812,8 +839,8 @@ function! s:Diff(...) abort
 
     let merc_path = s:gen_mercenary_path('cat', rev, s:buffer().relpath())
 
-    silent! execute 'keepalt leftabove vsplit ' . merc_path
-    let b:source_bufnr = source_bufnr 
+    let winnr = s:buffer_cache.vsplit()
+    call s:buffer_cache.edit( winnr, merc_path )
     diffthis
     wincmd p
 
