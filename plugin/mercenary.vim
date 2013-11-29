@@ -179,11 +179,11 @@ function! s:buffer(...)
 endfunction
 
 function! s:set_common_methods()
-  setlocal nomodified nomodifiable readonly
+  setlocal nowrap nomodified nomodifiable readonly
   nnoremap <script> <silent> <buffer> ?             :call <sid>buffer().dump()<CR>
   nnoremap <script> <silent> <buffer> q             :call <sid>MercClose()<CR>
-  cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
-  cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
+  " cabbrev  <script> <silent> <buffer> q             call <sid>MercClose()
+  " cabbrev  <script> <silent> <buffer> quit          call <sid>MercClose()
   nnoremap <buffer> <silent> s                      :<C-U>exe <SID>BlameShowCS()<CR>
   nnoremap <buffer> <silent> c                      :<C-U>exe <SID>BlameCatCS()<CR>
   nnoremap <buffer> <silent> d                      :<C-U>exe <SID>BlameDiffCS()<CR>
@@ -230,7 +230,7 @@ endfunction
 function! s:Buffer.close() dict abort
   let tbufnr = self.bufnr()
   if getwinvar( self.winnr(), "usequit", 0 )
-    quit
+    execute self.winnr() . "wincmd c"
   endif
   execute "bwipe ". tbufnr
   try 
@@ -562,7 +562,7 @@ endfunction
 function! s:BlameCatCS() abort
   let sync = s:BlameSync()
   if -1 != sync.csnum
-    call s:buffer_cache.edit( sync.target_win, s:gen_mercenary_path('cat', sync.csnum, sync.path) )
+    call s:buffer_cache.edit( sync.target_win, s:gen_mercenary_path('cat', sync.csnum, sync.source.base().repath() ) )
   else 
     echom "Could not find repository reference on this line."
   endif
@@ -571,7 +571,7 @@ endfunction
 function! s:BlameDiffCS() abort
   let sync = s:BlameSync()
   if -1 != sync.csnum
-    call s:Diff( sync.csnum )
+    call s:DoDiff( sync.target_win, sync.source.base(), sync.csnum )
   else 
     echom "Could not find repository reference on this line."
   endif
@@ -751,31 +751,32 @@ augroup MercGlogAug
 augroup END 
 
 
-" :HGqapplied {{{1
-function! s:HGqapplied() abort
+" :HGqseries {{{1
+function! s:HGqueue() abort
   let winnr = s:buffer_cache.vsplit()
-  call s:buffer_cache.edit( winnr, s:gen_mercenary_path('qapplied' ) )
+  call s:buffer_cache.edit( winnr, s:gen_mercenary_path('qseries' ) )
 endfunction
 
-call s:add_command("-nargs=0 HGqapplied call s:HGqapplied()")
+call s:add_command("-nargs=0 HGqueue call s:HGqueue()")
 
 " }}}1
 " mercenary://root_dir//qapplied {{{1
-function! s:method_handlers.qapplied() dict abort
-  let args = ['qapplied']
-  let hg_mq_applied_cmd = call(s:repo().hg_command, args, s:repo())
+function! s:method_handlers.qseries() dict abort
+  call s:DoMq( s:repo() )
+  " let args = ['qseries', '-sv']
+  " let hg_mq_applied_cmd = call(s:repo().hg_command, args, s:repo())
 
-  let temppath = resolve(tempname())
-  let outfile = temppath . '.mqlist'
-  let errfile = temppath . '.err'
+  " let temppath = resolve(tempname())
+  " let outfile = temppath . '.qseries'
+  " let errfile = temppath . '.err'
 
-  silent! execute '!'.hg_mq_applied_cmd.' > '.outfile.' 2> '.errfile
+  " silent! execute '!'.hg_mq_applied_cmd.' > '.outfile.' 2> '.errfile
 
-  silent! execute 'read '.outfile
+  " silent! execute 'read '.outfile
   " 0d
 
-  setlocal nomodified nomodifiable readonly filetype=mqlist
-  nnoremap <buffer> <silent> l :<C-U>exe <SID>MqList('')<CR>
+  setlocal nomodified nomodifiable readonly filetype=qseries
+  nnoremap <buffer> <silent> l :<C-U>exe <SID>Mq('')<CR>
   nnoremap <buffer> <silent> + :<C-U>exe <SID>MqCommand('qpush')<CR>
   nnoremap <buffer> <silent> - :<C-U>exe <SID>MqCommand('qpop')<CR>
   nnoremap <script> <silent> <buffer> ?   :call <sid>buffer().dump()<CR>
@@ -789,63 +790,96 @@ function! s:method_handlers.qapplied() dict abort
 
 endfunction
 
+function! s:DoMq( repo ) 
+  let args = ['qseries', '-sv']
+  let hg_mq_applied_cmd = call( a:repo.hg_command, args, a:repo )
+
+  let temppath = resolve(tempname())
+  let outfile = temppath . '.qseries'
+  let errfile = temppath . '.err'
+
+  silent! execute '!'.hg_mq_applied_cmd.' > '.outfile.' 2> '.errfile
+
+  silent! execute 'read '.outfile
+  
+endfunction
+
+function! s:MqSyntax() abort
+  let b:current_syntax = 'qseries'
+  syn match MQID '\v^\d+' 
+  syn region MQAppliedRegion start=' A ' end='$' transparent
+  syn region MQUnappliedRegion start=' U ' end='$' transparent
+  syn match MQAppliedName '\v\S+:' contained containedin=MQAppliedRegion "nextgroup=MQAppliedHeader
+  syn match MQUnappliedName '\v\S+:' contained containedin=MQUnappliedRegion "nextgroup=MQUnappliedHeader
+  syn match MQAppliedHeader ':\zs.*' contained containedin=MQAppliedRegion
+  syn match MQUnappliedHeader ':\zs.*' contained containedin=MQUnappliedRegion
+  hi def link MQID Identifier
+  hi def link MQUnappliedName Operator
+  hi def link MQAppliedName Function
+  hi def link MQAppliedHeader Comment
+  hi def link MQUnappliedHeader Keyword
+endfunction
+
 " Process the selection of a queue
-function! s:MqList(suffix) abort
+function! s:Mq(suffix) abort
   let qname = getline('.')
   echo "List ".qname
 endfunction
 
 function! s:MqCommand(cmd) abort
   let qname = getline('.')
+  let hg_mq_cmd = s:buffer().repo().hg_command( a:cmd )
+  let hg_mq = system( hg_mq_cmd )
+  echom hg_mq
+  call s:DoMq( s:buffer().repo() )
+  redraw!
   echo a:cmd . qname
 endfunction
 
 augroup mercurial_queue
-  autocmd BufReadPost *.mqlist setfiletype mqlist
-  autocmd Syntax mqlist call s:MqListSyntax()
+  autocmd BufReadPost *.qseries setfiletype qseries
+  autocmd Syntax qseries call s:MqSyntax()
 augroup END
-
-function! s:MqListSyntax() abort
-  syn match MercenaryQName "^.*"
-  hi def link MercenaryQName Keyword
-
-endfunction
 
 " }}}1
 " :HGdiff {{{1
+function! s:DoDiff( winnr, buffer, ... ) abort
+    let rev = a:0 ? a:1 : 'p1()'
+    let merc_p1_path = s:gen_mercenary_path('cat', rev, a:buffer.relpath())
 
-function! s:Diff(...) abort
-  if a:0 == 0
-    let merc_p1_path = s:gen_mercenary_path('cat', 'p1()', s:buffer().relpath())
+    execute a:winnr ."wincmd w"
+    diffthis
 
     let winnr = s:buffer_cache.vsplit()
     call s:buffer_cache.edit( winnr, merc_p1_path )
+    execute winnr ."wincmd w"
     diffthis
     wincmd p
 
-    let hg_parent_check_log_cmd = s:repo().hg_command('log', '--rev', 'p2()')
+    " if we asked for a parent, then consider merge changeset's or other
+    " second parent
+    if rev =~ '^p1(.*)$'
+      let l:parent2 = substitute( rev, '1', '2', 'i' )
+      let hg_parent_check_log_cmd = a:buffer.base().repo().hg_command('log', '--rev', l:parent2)
+      let hg_parent_check_log = system(hg_parent_check_log_cmd) 
 
-    if system(hg_parent_check_log_cmd) != ''
-      let merc_p2_path = s:gen_mercenary_path('cat', 'p2()', s:buffer().relpath())
-      let winnr = s:buffer_cache.vsplit("rightbelow")
-      call s:buffer_cache.edit( winnr, merc_p2_path )
-      diffthis
-      wincmd p
+      if hg_parent_check_log != ""
+        let merc_p2_path = s:gen_mercenary_path('cat', l:parent2, a:buffer.relpath())
+        let winnr = s:buffer_cache.vsplit("rightbelow")
+        call s:buffer_cache.edit( winnr, merc_p2_path )
+        execute winnr ."wincmd w"
+        diffthis
+        wincmd p
+      endif
     endif
 
-    diffthis
-  elseif a:0 == 1
-    let rev = a:1
+endfunction
 
-    let merc_path = s:gen_mercenary_path('cat', rev, s:buffer().relpath())
-
-    let winnr = s:buffer_cache.vsplit()
-    call s:buffer_cache.edit( winnr, merc_path )
-    diffthis
-    wincmd p
-
-    diffthis
-  endif
+function! s:Diff(...) abort
+  " trick to pass vargs onto another function
+  let arglist = copy( a:000 )
+  call extend( arglist, [ winnr(), s:buffer() ], 0 )
+  call call( "s:DoDiff", arglist )
 endfunction
 
 call s:add_command("-nargs=? HGdiff call s:Diff(<f-args>)")
