@@ -205,10 +205,12 @@ function! s:buffer_cache.edit( winnr, path, ... ) dict abort
   let options = a:0 ? a:1 : {}
 
   let parentbuf = s:buffer().bufnr()
+  let replacedbufnr = winbufnr( a:winnr )
   execute "silent setlocal ". get( options, "preopt", "" )
   execute a:winnr .'wincmd w'
   let restore = s:buffer().restore_setting()
   let restore.source_bufnr = parentbuf
+  let restore.replacedbufnr = replacedbufnr
   silent execute 'edit  ' . a:path
   let nbuf =  s:buffer()
   call nbuf.set_restore( restore )
@@ -229,8 +231,13 @@ endfunction
 
 function! s:Buffer.close() dict abort
   let tbufnr = self.bufnr()
+  execute tbufnr . "buffer"
   if getwinvar( self.winnr(), "usequit", 0 )
+    " echom "using quit"
     execute self.winnr() . "wincmd c"
+  else
+    let replacedbufnr = getbufvar(self.bufnr(), "replacedbufnr", "#" )
+    execute replacedbufnr . "buffer"
   endif
   execute "bwipe ". tbufnr
   try 
@@ -304,6 +311,7 @@ endfunction
 
 function! s:Buffer.set_restore( restore_vals ) dict abort
   call self.setvar( "source_bufnr", a:restore_vals["source_bufnr"] )
+  call self.setvar( "replacedbufnr", a:restore_vals["replacedbufnr"] )
   let restore_cmd = a:restore_vals["restore"]
   call self.onwinleave( restore_cmd  )
   " When the current buffer containing the blame leaves the window, restore the
@@ -365,6 +373,7 @@ function! s:Buffer.dump() dict abort
   echom "    base " . self.base().bufnr() . " - " . self.base().relpath()
   try
     echom "    parent " . self.parent().bufnr()
+    echom "    replacedbufnr " . self.getvar("replacedbufnr")
     echom "    repo " . self.repo()
   catch
     echom "    repo : none"
@@ -562,7 +571,7 @@ endfunction
 function! s:BlameCatCS() abort
   let sync = s:BlameSync()
   if -1 != sync.csnum
-    call s:buffer_cache.edit( sync.target_win, s:gen_mercenary_path('cat', sync.csnum, sync.source.base().repath() ) )
+    call s:buffer_cache.edit( sync.target_win, s:gen_mercenary_path('cat', sync.csnum, sync.source.base().relpath() ) )
   else 
     echom "Could not find repository reference on this line."
   endif
@@ -830,7 +839,7 @@ function! s:MqCommand(cmd) abort
   let qname = getline('.')
   let hg_mq_cmd = s:buffer().repo().hg_command( a:cmd )
   let hg_mq = system( hg_mq_cmd )
-  echom hg_mq
+  " echom hg_mq
   call s:DoMq( s:buffer().repo() )
   redraw!
   echo a:cmd . qname
