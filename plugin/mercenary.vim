@@ -740,12 +740,11 @@ endfunction
 " }}}1
 " mercenary://root_dir//glog:filepath {{{1
 function! s:method_handlers.glog(filepath) dict abort 
-  let args = ['glog', '--template', 'cs:       [{rev}:{node|short}] {tags}\nsummary: {desc|firstline|fill68|tabindent|tabindent}\n\n', a:filepath]
+  let args = ['glog', '--template', 'cs:      [{rev}:{node|short}] {tags}\nsummary: {desc|firstline|fill68|tabindent|tabindent}\n\n', a:filepath]
   let hg_glog_cmd = call(s:repo().hg_command, args, s:repo())
   let temppath = resolve(tempname())
   let outfile = temppath . '.glog'
   let errfile = temppath . '.err'
-
   silent! execute '!'.hg_glog_cmd.' > '.outfile.' 2> '.errfile
   silent! execute 'read '.outfile
 
@@ -760,7 +759,8 @@ augroup MercGlogAug
 augroup END 
 
 
-" :HGqseries {{{1
+" }}}1
+" :HGgrep {{{1
 function! s:HGgrep(...) abort
   let searchregex = a:0        ? a:1 : expand("<cword>")
   let path        = (a:0 == 2) ? a:2 : s:buffer().relpath()
@@ -835,6 +835,7 @@ function! s:method_handlers.qseries() dict abort
 
   setlocal nomodified nomodifiable readonly filetype=qseries
   nnoremap <buffer> <silent> l :<C-U>exe <SID>Mq('')<CR>
+  nnoremap <buffer> <silent> r :<C-U>exe <SID>Mqrefresh()<CR>
   nnoremap <buffer> <silent> + :<C-U>exe <SID>MqCommand('qpush')<CR>
   nnoremap <buffer> <silent> - :<C-U>exe <SID>MqCommand('qpop')<CR>
   " nnoremap <script> <silent> <buffer> ?   :call <sid>buffer().dump()<CR>
@@ -844,7 +845,8 @@ function! s:method_handlers.qseries() dict abort
 endfunction
 
 function! s:DoMq( repo ) 
-  let args = ['qseries', '-sv']
+  setlocal modifiable noreadonly
+  let args = ['qunapplied', '-sv']
   let hg_mq_series_cmd = call( a:repo.hg_command, args, a:repo )
 
   let temppath = resolve(tempname())
@@ -853,8 +855,19 @@ function! s:DoMq( repo )
 
   silent! execute '!'.hg_mq_series_cmd.' > '.outfile.' 2> '.errfile
 
+  g/^/d
   silent! execute 'read '.outfile
-  
+  g/^/m0
+  put= '== Applied MQ patches =='
+  normal G
+
+  let args = ['glog', '--template', 'cs:      [{rev}:{node|short}] {tags}\nsummary: {desc|firstline|fill68|tabindent|tabindent}\n\n', '-rqtip:qbase' ]
+  let hg_glog_cmd = call(a:repo.hg_command, args, a:repo)
+  let outfile = temppath . '.glog'
+  let errfile = temppath . '.err'
+  silent! execute '!'.hg_glog_cmd.' > '.outfile.' 2> '.errfile
+  silent! execute 'read '.outfile
+  setlocal nomodified nomodifiable readonly filetype=qseries
 endfunction
 
 function! s:MqSyntax() abort
@@ -879,6 +892,13 @@ function! s:Mq(suffix) abort
   echo "List ".qname
 endfunction
 
+function! s:Mqrefresh() abort
+  echom "refreshing"
+  call s:DoMq( s:buffer().repo() )
+  setlocal nomodified nomodifiable readonly filetype=qseries
+  redraw!
+endfunction
+
 function! s:MqCommand(cmd) abort
   let qname = getline('.')
   " echom hg_mq
@@ -890,11 +910,12 @@ function! s:MqCommand(cmd) abort
 
   " Write the blame output to a .mercenaryblame file in a temp folder somewhere
   silent! execute '!' . hg_cmd . ' > ' . outfile . ' 2> ' . errfile
-  if hg_cmd_result != ""
-    call s:warn( "failed to " . a:cmd . ": result - " . hg_cmd_result )
+  if v:shell_error 
+    call s:warn( "failed to " . a:cmd . ": " . readfile(errfile) )
   else
     call s:DoMq( s:buffer().repo() )
   endif
+  redraw!
 endfunction
 
 augroup mercurial_queue
