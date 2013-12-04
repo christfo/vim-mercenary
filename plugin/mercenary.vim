@@ -761,6 +761,65 @@ augroup END
 
 
 " :HGqseries {{{1
+function! s:HGgrep(...) abort
+  let searchregex = a:0        ? a:1 : expand("<cword>")
+  let path        = (a:0 == 2) ? a:2 : s:buffer().relpath()
+  let winnr       = s:buffer_cache.vsplit()
+  call s:buffer_cache.edit( winnr, s:gen_mercenary_path('grep', searchregex, path ) )
+endfunction
+
+call s:add_command("-nargs=? HGgrep call s:HGgrep(<f-args>)")
+
+" }}}1
+" mercenary://root_dir//grep {{{1
+function! s:method_handlers.grep(regex,path) dict abort
+  call s:DoGrep( s:repo(), a:regex, a:path )
+
+  setlocal nomodified nomodifiable readonly filetype=grep
+endfunction
+
+function! s:DoGrep( repo, regex, path ) 
+  let args = ['grep', '-nuadfq', '--all', a:regex, a:path]
+  let hg_grep_applied_cmd = call( a:repo.hg_command, args, a:repo )
+  let temppath = resolve(tempname())
+  let outfile = temppath . '.grep'
+  let errfile = temppath . '.err'
+
+  silent! execute '!'.hg_grep_applied_cmd.' > '.outfile.' 2> '.errfile
+  silent! execute 'read '.outfile
+endfunction
+
+function! s:GrepSyntax() abort
+  " BUILD:249:20:asuffiel:Tue Jun 04 11:28:55 2013 +0100:    output_uid=$(stat -f '%u' "$output_dir")
+  let b:current_syntax = 'grep'
+  syn match GREPpath '\v^\a{-}:' nextgroup=GREPcs
+  syn match GREPcs '\v\d{-}:' nextgroup=GREPlnum
+  syn match GREPlnum '\v\d{-}:' nextgroup=GREPauthor
+  syn match GREPauthor '\v\a{-}:' nextgroup=GREPdate
+  syn match GREPdate '\v.+\d{-}:' nextgroup=GREPline
+  syn match GREPline '\v\S{-}$' 
+
+  hi def link GREPpath Identifier
+  hi def link GREPcs Operator
+  hi def link GREPlnum Function
+  hi def link GREPauthor Comment
+  hi def link GREPdate Keyword
+  hi def link GREPline Variable
+endfunction
+
+
+function! s:GrepCommand(cmd) abort
+  call s:DoGrep( s:buffer().repo() )
+  redraw!
+endfunction
+
+augroup mercurial_grep
+  autocmd BufReadPost *.grep setfiletype grep
+  autocmd Syntax grep call s:GrepSyntax()
+augroup END
+
+" }}}1
+" :HGqseries {{{1
 function! s:HGqueue() abort
   let winnr = s:buffer_cache.vsplit()
   call s:buffer_cache.edit( winnr, s:gen_mercenary_path('qseries' ) )
@@ -772,42 +831,27 @@ call s:add_command("-nargs=0 HGqueue call s:HGqueue()")
 " mercenary://root_dir//qapplied {{{1
 function! s:method_handlers.qseries() dict abort
   call s:DoMq( s:repo() )
-  " let args = ['qseries', '-sv']
-  " let hg_mq_applied_cmd = call(s:repo().hg_command, args, s:repo())
-
-  " let temppath = resolve(tempname())
-  " let outfile = temppath . '.qseries'
-  " let errfile = temppath . '.err'
-
-  " silent! execute '!'.hg_mq_applied_cmd.' > '.outfile.' 2> '.errfile
-
-  " silent! execute 'read '.outfile
   " 0d
 
   setlocal nomodified nomodifiable readonly filetype=qseries
   nnoremap <buffer> <silent> l :<C-U>exe <SID>Mq('')<CR>
   nnoremap <buffer> <silent> + :<C-U>exe <SID>MqCommand('qpush')<CR>
   nnoremap <buffer> <silent> - :<C-U>exe <SID>MqCommand('qpop')<CR>
-  nnoremap <script> <silent> <buffer> ?   :call <sid>buffer().dump()<CR>
-  nnoremap <script> <silent> <buffer> q   :call <sid>MercClose()<CR>
-  cabbrev  <script> <silent> <buffer> q    call <sid>MercClose()
-  cabbrev  <script> <silent> <buffer> quit call <sid>MercClose()
-  " if &bufhidden ==# ''
-  "   " Delete the buffer when it becomes hidden
-  "   setlocal bufhidden=wipe
-  " endif
-
+  " nnoremap <script> <silent> <buffer> ?   :call <sid>buffer().dump()<CR>
+  " nnoremap <script> <silent> <buffer> q   :call <sid>MercClose()<CR>
+  " cabbrev  <script> <silent> <buffer> q    call <sid>MercClose()
+  " cabbrev  <script> <silent> <buffer> quit call <sid>MercClose()
 endfunction
 
 function! s:DoMq( repo ) 
   let args = ['qseries', '-sv']
-  let hg_mq_applied_cmd = call( a:repo.hg_command, args, a:repo )
+  let hg_mq_series_cmd = call( a:repo.hg_command, args, a:repo )
 
   let temppath = resolve(tempname())
   let outfile = temppath . '.qseries'
   let errfile = temppath . '.err'
 
-  silent! execute '!'.hg_mq_applied_cmd.' > '.outfile.' 2> '.errfile
+  silent! execute '!'.hg_mq_series_cmd.' > '.outfile.' 2> '.errfile
 
   silent! execute 'read '.outfile
   
@@ -837,12 +881,20 @@ endfunction
 
 function! s:MqCommand(cmd) abort
   let qname = getline('.')
-  let hg_mq_cmd = s:buffer().repo().hg_command( a:cmd )
-  let hg_mq = system( hg_mq_cmd )
   " echom hg_mq
-  call s:DoMq( s:buffer().repo() )
-  redraw!
   echo a:cmd . qname
+  let hg_cmd = s:buffer().base().repo().hg_command(a:cmd)
+  let temppath = resolve(tempname())
+  let outfile = temppath . '.mqcmd'
+  let errfile = temppath . '.err'
+
+  " Write the blame output to a .mercenaryblame file in a temp folder somewhere
+  silent! execute '!' . hg_cmd . ' > ' . outfile . ' 2> ' . errfile
+  if hg_cmd_result != ""
+    call s:warn( "failed to " . a:cmd . ": result - " . hg_cmd_result )
+  else
+    call s:DoMq( s:buffer().repo() )
+  endif
 endfunction
 
 augroup mercurial_queue
