@@ -385,7 +385,7 @@ endfunction
 
 augroup mercenary_buffer
   autocmd!
-  autocmd BufWinLeave * call s:Buffer_winleave(expand('<abuf>'))
+  " autocmd BufWinLeave * call s:Buffer_winleave(expand('<abuf>'))
 augroup END
 
 function! s:MercMoveSync(direction) "{{{
@@ -629,7 +629,11 @@ function! s:method_handlers.cat(rev, filepath) dict abort
   silent! execute 'read ' . outfile
   " :read dumps the output below the current line - so delete the first line
   " (which will be empty)
+  let winview = winsaveview()
+  let current = line('.')
   0d
+  call winrestview( winview )
+  execute current
 
 endfunction
 " }}}1
@@ -659,7 +663,9 @@ function! s:method_handlers.show(rev) dict abort
   silent! execute '!' . hg_log_command . ' > ' . outfile . ' 2> ' . errfile
 
   silent! execute 'read ' . outfile
+  let winview = winsaveview()
   0d
+  call winrestview( winview )
 
   setlocal filetype=diff
 endfunction
@@ -729,10 +735,6 @@ function! s:GlogSettings()
   setlocal bufhidden=
   setlocal buftype=nofile
   setlocal filetype=glog
-  " if &bufhidden ==# ''
-  "   " Delete the buffer when it becomes hidden
-  "   setlocal bufhidden=wipe
-  " endif
   call s:GlogSyntax()
   call s:GlogMap()
 endfunction 
@@ -831,13 +833,13 @@ call s:add_command("-nargs=0 HGqueue call s:HGqueue()")
 " mercenary://root_dir//qapplied {{{1
 function! s:method_handlers.qseries() dict abort
   call s:DoMq( s:repo() )
-  " 0d
 
   setlocal nomodified nomodifiable readonly filetype=qseries
   nnoremap <buffer> <silent> l :<C-U>exe <SID>Mq('')<CR>
   nnoremap <buffer> <silent> r :<C-U>exe <SID>Mqrefresh()<CR>
   nnoremap <buffer> <silent> + :<C-U>exe <SID>MqCommand('qpush')<CR>
   nnoremap <buffer> <silent> - :<C-U>exe <SID>MqCommand('qpop')<CR>
+  " nnoremap <buffer> <silent> <cr> :<C-U>exe <SID>MqCommand('qgoto')<CR>
   " nnoremap <script> <silent> <buffer> ?   :call <sid>buffer().dump()<CR>
   " nnoremap <script> <silent> <buffer> q   :call <sid>MercClose()<CR>
   " cabbrev  <script> <silent> <buffer> q    call <sid>MercClose()
@@ -853,13 +855,18 @@ function! s:DoMq( repo )
   let outfile = temppath . '.qseries'
   let errfile = temppath . '.err'
 
-  silent! execute '!'.hg_mq_series_cmd.' > '.outfile.' 2> '.errfile
 
   g/^/d
+  call append( line('$'), '== Unapplied MQ patches ==')
+  call append( line('$'), "" )
+  silent! execute '!'.hg_mq_series_cmd.' > '.outfile.' 2> '.errfile
   silent! execute 'read '.outfile
-  g/^/m0
-  put= '== Applied MQ patches =='
-  normal G
+  g/^/m0   "reverse  the patches
+  call append( line('$'), "" )
+  call append( line('$'), '== Applied MQ patches ==')
+  call append( line('$'), "" )
+  let tipos = line('$')
+  call cursor( tipos, 0 )
 
   let args = ['glog', '--template', 'cs:      [{rev}:{node|short}] {tags}\nsummary: {desc|firstline|fill68|tabindent|tabindent}\n\n', '-rqtip:qbase' ]
   let hg_glog_cmd = call(a:repo.hg_command, args, a:repo)
@@ -867,42 +874,39 @@ function! s:DoMq( repo )
   let errfile = temppath . '.err'
   silent! execute '!'.hg_glog_cmd.' > '.outfile.' 2> '.errfile
   silent! execute 'read '.outfile
+  call cursor( tipos, 0 )
   setlocal nomodified nomodifiable readonly filetype=qseries
 endfunction
 
 function! s:MqSyntax() abort
+  call s:GlogSyntax()
   let b:current_syntax = 'qseries'
+  syn match MQApplied '\v(cs|summary)\:' 
   syn match MQID '\v^\d+' 
-  syn region MQAppliedRegion start=' A ' end='$' transparent
-  syn region MQUnappliedRegion start=' U ' end='$' transparent
-  syn match MQAppliedName '\v\S+:' contained containedin=MQAppliedRegion "nextgroup=MQAppliedHeader
-  syn match MQUnappliedName '\v\S+:' contained containedin=MQUnappliedRegion "nextgroup=MQUnappliedHeader
-  syn match MQAppliedHeader ':\zs.*' contained containedin=MQAppliedRegion
-  syn match MQUnappliedHeader ':\zs.*' contained containedin=MQUnappliedRegion
+  syn region MQUnappliedRegion start=' Unapplied' end=' Applied' transparent
+  " syn match MQAppliedName '\v\S+\:' contained containedin=MQAppliedRegion "nextgroup=MQAppliedHeader
+  syn match MQUnappliedName '\v\S\+\:' contained containedin=MQUnappliedRegion "nextgroup=MQUnappliedHeader
+  " syn match MQAppliedHeader '\:\zs.*' contained containedin=MQAppliedRegion
+  syn match MQUnappliedHeader '\:\zs.*' contained containedin=MQUnappliedRegion
+  hi def link MQApplied Function
   hi def link MQID Identifier
   hi def link MQUnappliedName Operator
-  hi def link MQAppliedName Function
-  hi def link MQAppliedHeader Comment
   hi def link MQUnappliedHeader Keyword
+  " hi def link MQAppliedName Function
+  " hi def link MQAppliedHeader Comment
 endfunction
 
 " Process the selection of a queue
-function! s:Mq(suffix) abort
-  let qname = getline('.')
-  echo "List ".qname
-endfunction
-
 function! s:Mqrefresh() abort
-  echom "refreshing"
+  let current = line('.')
   call s:DoMq( s:buffer().repo() )
   setlocal nomodified nomodifiable readonly filetype=qseries
   redraw!
+  execute current
 endfunction
 
 function! s:MqCommand(cmd) abort
-  let qname = getline('.')
   " echom hg_mq
-  echo a:cmd . qname
   let hg_cmd = s:buffer().base().repo().hg_command(a:cmd)
   let temppath = resolve(tempname())
   let outfile = temppath . '.mqcmd'
@@ -913,7 +917,7 @@ function! s:MqCommand(cmd) abort
   if v:shell_error 
     call s:warn( "failed to " . a:cmd . ": " . readfile(errfile) )
   else
-    call s:DoMq( s:buffer().repo() )
+    call s:Mqrefresh()
   endif
   redraw!
 endfunction

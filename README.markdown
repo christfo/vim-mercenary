@@ -4,6 +4,28 @@ mercenary.vim
 I'm not going to lie to you; mercenary.vim may very well be the worst
 Mercurial wrapper of all time.
 
+Commands
+--------
+
+There are two types of commands presented here. Ones that offer a view of history, and
+ones that offer detail from a given revision. The former will launch into a new split,
+and the later will try and find a suitable window to show themselves. 
+
+### History Views
+* HGlog
+* HGblame
+* HGgrep [ searchregex==<cword> ]
+* Hgqueue
+
+### Revision Detail
+* HGshow
+* HGcat
+* HGdiff [ revision == 'p1()' ]
+
+In any mercenary window, there is a local mapping 'q' to quit out of the view, and 
+where there is some kind of changeset identifier on the current line, there are 
+mappings 's', 'c', and 'd' for 'show', 'cat' and 'diff' respectively.
+
 Show and Tell
 -------------
 
@@ -41,7 +63,7 @@ If you prefer [pathogen.vim](https://github.com/tpope/vim-pathogen), after
 installing it, simply copy and paste:
 
     cd ~/.vim/bundle
-    git clone git://github.com/phleet/vim-mercenary.git
+    git clone git://github.com/christfo/vim-mercenary.git
 
 Once help tags have been generated, you can view the manual with
 `:help mercenary`.
