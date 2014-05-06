@@ -391,7 +391,7 @@ augroup END
 function! s:MercMoveSync(direction) "{{{
   while line('.') > 0
     let linetxt = getline('.')
-    let cmark = match( linetxt, '^\(| \)*[@o]' )
+    let cmark = match( linetxt, '^[ |+-]*[@o]' )
     if cmark != -1
       call cursor( line('.'), stridx( linetxt, 'o' ) )
       break
